@@ -348,6 +348,20 @@ button.item:active { transform: scale(0.99); }
 .rep { background: var(--rep-bg); color: var(--rep-ink); border-radius: 8px; padding: 1px 8px; font-weight: 600; }
 .instr { margin: 0; font-size: 1.2rem; line-height: 1.75; overflow-wrap: anywhere; }
 .termname { color: var(--accent); font-weight: 600; }
+.checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.chk {
+  width: 100%; display: flex; align-items: flex-start; gap: 12px; text-align: left;
+  padding: 12px; min-height: 52px; border-radius: 14px; border: 1px solid var(--line);
+  background: var(--surface); font-size: 1.1rem; line-height: 1.5; cursor: pointer;
+}
+.chk .box { flex: none; width: 26px; height: 26px; margin-top: 1px; border-radius: 8px; border: 2px solid var(--muted); display: grid; place-items: center; }
+.chk .box svg { width: 16px; height: 16px; opacity: 0; stroke: var(--on-accent); }
+.chk .txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chk.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.chk.on .box { background: var(--accent); border-color: var(--accent); }
+.chk.on .box svg { opacity: 1; }
+.chk.on .txt { color: var(--muted); text-decoration: line-through; }
+#rowView { margin-top: 4px; padding-left: 0; }
 .until {
   margin-top: 14px;
   padding: 10px 12px;

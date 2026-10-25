@@ -968,7 +968,17 @@ function renderTracker(animate) {
     let h = '<div class="rowhead"><div class="rownum">' + big + '</div><div class="rowmeta"><span class="rowlabel">' + esc(label) + "</span>" +
       (side ? '<span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + side + "</span>" : "") + "</div></div>";
     if (r.label && pat.kind !== "builtin") h += '<p class="patlabel">' + esc(r.label) + "</p>";
-    h += '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>";
+    // long rows (sweater yokes, shaping) can switch to a tick-off checklist; ticks belong to this exact row and repeat
+    const posKey = pr.sec + ":" + pr.row + ":" + pr.rep;
+    const isLong = r.steps.length >= 8 || r.steps.join(" ").length > 350;
+    const asList = isLong && lsGet("knit-long-rows") === "list";
+    if (asList) {
+      const ticks = pr.ticks && pr.ticks.key === posKey ? pr.ticks.on : [];
+      h += '<ul class="checklist">' + r.steps.map((t, i) => '<li><button type="button" class="chk' + (ticks.includes(i) ? " on" : "") + '" data-step="' + i + '" aria-pressed="' + ticks.includes(i) + '"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg></span><span class="txt">' + fmtStep(t, g.techniques) + "</span></button></li>").join("") + "</ul>";
+    } else {
+      h += '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>";
+    }
+    if (isLong) h += '<button type="button" class="linkbtn" id="rowView">' + (asList ? "Show as sentence" : "Show as checklist") + "</button>";
     if (techs.length) h += '<div class="techs"><h3>Techniques for this row</h3>' + techs.map((t) => '<div class="tech"><b>' + esc(t.name || t.term) + "</b>" + esc(t.how) + "</div>").join("") + "</div>";
     // only needed once, when the piece is long enough, so it sits below the techniques
     if (s.repeat_type === "until") {
@@ -977,6 +987,17 @@ function renderTracker(animate) {
     }
     card.className = "card guide";
     card.innerHTML = h;
+    const rv = $("rowView");
+    if (rv) rv.addEventListener("click", () => { lsSet("knit-long-rows", asList ? "sentence" : "list"); renderTracker(false); });
+    card.querySelectorAll(".chk").forEach((b) => b.addEventListener("click", () => {
+      const i = +b.dataset.step;
+      if (!pr.ticks || pr.ticks.key !== posKey) pr.ticks = { key: posKey, on: [] };
+      const at = pr.ticks.on.indexOf(i);
+      if (at >= 0) pr.ticks.on.splice(at, 1); else pr.ticks.on.push(i);
+      b.classList.toggle("on", at < 0);
+      b.setAttribute("aria-pressed", String(at < 0));
+      save("projects", p);
+    }));
     const mo = $("moveOn");
     if (mo) mo.addEventListener("click", () => { guideMoveOn(g, pr); save("projects", p); renderTracker(true); window.scrollTo(0, 0); });
 
@@ -1042,6 +1063,7 @@ function renderTracker(animate) {
 
 function advance() {
   const p = cur(), g = guideOf(curPattern()), pr = p.progress;
+  pr.ticks = null;
   if (g) guideAdvance(g, pr); else pr.count = (pr.count || 0) + 1;
   save("projects", p);
   renderTracker(true);
@@ -1516,7 +1538,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-10-25.7";
+const APP_VERSION = "2026-10-25.8";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;
