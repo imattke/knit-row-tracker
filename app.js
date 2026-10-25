@@ -971,11 +971,12 @@ function renderTracker(animate) {
     h += r.steps.length > 3 && pat.kind !== "builtin"
       ? '<ol class="steplist">' + r.steps.map((t) => "<li>" + fmtStep(t, g.techniques) + "</li>").join("") + "</ol>"
       : '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>";
-    if (s.repeat_type === "until") {
-      h += '<div class="until">Repeat until <strong>' + esc(s.repeat_until.replace(/^until\s+/i, "")) + "</strong>.</div>";
-      h += '<button type="button" class="btn block moveon" id="moveOn">' + (pr.sec < g.sections.length - 1 ? "Done repeating: go to " + esc(g.sections[pr.sec + 1].title) : "Done repeating: finish the pattern") + "</button>";
-    }
     if (techs.length) h += '<div class="techs"><h3>Techniques for this row</h3>' + techs.map((t) => '<div class="tech"><b>' + esc(t.name || t.term) + "</b>" + esc(t.how) + "</div>").join("") + "</div>";
+    // only needed once, when the piece is long enough, so it sits below the techniques
+    if (s.repeat_type === "until") {
+      h += '<div class="repeatend"><div class="until">Repeat until <strong>' + esc(s.repeat_until.replace(/^until\s+/i, "")) + "</strong>.</div>" +
+        '<button type="button" class="btn block moveon" id="moveOn">' + (pr.sec < g.sections.length - 1 ? "Done repeating: go to " + esc(g.sections[pr.sec + 1].title) : "Done repeating: finish the pattern") + "</button></div>";
+    }
     card.className = "card guide";
     card.innerHTML = h;
     const mo = $("moveOn");
@@ -1517,7 +1518,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-10-25.5";
+const APP_VERSION = "2026-10-25.6";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;
