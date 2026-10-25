@@ -1,1 +1,33 @@
-# knit-row-tracker
+# Knit Row Tracker
+
+A personal knitting app that installs to your phone's home screen.
+
+- **Patterns:** a built-in 8-row repeat, plus any PDF patterns you add. Claude reads each PDF and turns it into row-by-row steps with technique explanations.
+- **Projects:** start a project from a pattern (name, start date, yarn, gauge, notes) and track the row you're on, with big buttons for "row finished" and back.
+- **Offline:** after the first visit the app works without a connection. Only reading a new pattern needs the internet.
+- **Private:** patterns, PDFs, projects and your API key are stored on your device only. Use Settings → Backup to move them to another device.
+
+It's a static site with no build step. Any static host works.
+
+## Hosting
+
+### Cloudflare Pages
+1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Pages** → **Connect to Git**.
+2. Pick `knit-row-tracker`. Framework preset: **None**. Build command: leave empty. Build output directory: `/`.
+3. **Save and Deploy**. The app is served at `https://<project>.pages.dev` and redeploys on every push.
+
+### GitHub Pages
+Repo **Settings** → **Pages** → Source: **Deploy from a branch**, branch `main`, folder `/ (root)`.
+
+## Install on a phone
+- **iPhone (Safari):** open the site → Share → **Add to Home Screen**.
+- **Android (Chrome):** open the site → menu → **Install app** (or **Add to Home screen**).
+
+## Pattern reading
+Settings → paste an Anthropic API key from https://console.anthropic.com/settings/keys. The key is stored only on the device, and the app sends it only to Anthropic's API. Keep the app open while a pattern is being read; it usually takes a minute or two.
+
+## Files
+- `index.html`: markup and styles
+- `app.js`: app logic (IndexedDB storage, tracker, PDF viewer, Claude pattern reading, backup)
+- `sw.js`, `manifest.webmanifest`, `icons/`: offline support and home-screen install
+- `vendor/`: pdf.js 3.11.174 (legacy build) and a browser bundle of `@anthropic-ai/sdk` 0.133.0

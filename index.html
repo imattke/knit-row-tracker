@@ -1,0 +1,717 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Knit Row Tracker</title>
+<meta name="description" content="Pattern bank, projects and a row-by-row tracker for knitting.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Knit Rows">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#edeff7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15131f" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* One narrow column: lists on the home screen, a row card plus pattern pages inside a project, big thumb buttons docked at the bottom. */
+:root {
+  --bg: #edeff7;
+  --surface: #ffffff;
+  --ink: #1e1b3a;
+  --muted: #5d5a7a;
+  --line: #d3d6e6;
+  --plum: #3b2a6b;
+  --on-plum: #ffffff;
+  --accent: #0f7b7b;
+  --on-accent: #ffffff;
+  --rep-bg: #e3dcf7;
+  --rep-ink: #3b2a6b;
+  --focus: #0f7b7b;
+  --danger: #b3261e;
+  --scrim: rgba(20, 16, 40, 0.45);
+  --font-display: "Bricolage Grotesque", "Figtree", system-ui, sans-serif;
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15131f;
+    --surface: #211e30;
+    --ink: #ece9f7;
+    --muted: #a6a2c4;
+    --line: #38344f;
+    --plum: #b9a8f5;
+    --on-plum: #15131f;
+    --accent: #4fd1c5;
+    --on-accent: #0d1f1e;
+    --rep-bg: #3a3260;
+    --rep-ink: #d9cffc;
+    --focus: #4fd1c5;
+    --danger: #ff8a80;
+    --scrim: rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { height: 100%; }
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 18px;
+  line-height: 1.5;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--bg);
+  z-index: 10;
+}
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+.app {
+  max-width: 560px;
+  margin: 0 auto;
+  padding-top: calc(20px + env(safe-area-inset-top, 0px));
+  padding-bottom: 150px;
+  padding-left: max(18px, env(safe-area-inset-left, 0px));
+  padding-right: max(18px, env(safe-area-inset-right, 0px));
+}
+.app.wide { max-width: 860px; }
+
+/* ---------- home ---------- */
+header.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.brand {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+}
+.iconbtn {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex: none;
+}
+.iconbtn svg { width: 22px; height: 22px; stroke: var(--ink); }
+
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.tabs button {
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  min-height: 44px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tabs button[aria-selected="true"] { background: var(--plum); color: var(--on-plum); }
+.tabs .count { font-weight: 500; opacity: 0.8; }
+.tabs.mini { margin: 0 0 16px; }
+.tabs.mini button { min-height: 40px; }
+
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+button.item { width: 100%; text-align: left; cursor: pointer; }
+button.item:active { transform: scale(0.99); }
+.item-name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.2rem;
+  line-height: 1.25;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.item-meta { color: var(--muted); font-size: 0.9rem; margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: var(--rep-bg);
+  color: var(--rep-ink);
+  white-space: nowrap;
+}
+.chip.row { background: var(--plum); color: var(--on-plum); font-variant-numeric: tabular-nums; }
+.chip.ok { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); color: var(--accent); }
+.chip.warn { background: color-mix(in srgb, var(--danger) 14%, var(--surface)); color: var(--danger); }
+.chip.plain { background: none; border: 1.5px solid var(--line); color: var(--muted); padding: 1px 9px; }
+.item-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 14px;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--ink);
+}
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.btn.block { width: 100%; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn svg { width: 20px; height: 20px; }
+.linkbtn {
+  border: 0;
+  background: none;
+  padding: 10px 4px;
+  min-height: 44px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.linkbtn.danger { color: var(--danger); }
+.linkbtn:disabled { opacity: 0.5; cursor: default; }
+
+.empty {
+  text-align: center;
+  padding: 28px 18px;
+  border: 1.5px dashed var(--line);
+  border-radius: 18px;
+  color: var(--muted);
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+}
+.empty b { color: var(--ink); font-family: var(--font-display); font-size: 1.1rem; }
+.addbar { display: grid; gap: 6px; margin-bottom: 14px; }
+.hint { margin: 0; color: var(--muted); font-size: 0.88rem; }
+.hint.warn { color: var(--danger); }
+.section-label {
+  margin: 22px 4px 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* ---------- inner screens ---------- */
+.bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: -8px 0 6px;
+}
+.backlink {
+  border: 0;
+  background: none;
+  padding: 8px 8px 8px 0;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+.backlink svg { width: 20px; height: 20px; stroke: currentColor; }
+.tally { color: var(--muted); font-size: 0.9rem; text-align: right; font-variant-numeric: tabular-nums; }
+.tally strong { color: var(--ink); font-weight: 600; }
+.ptitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.pmeta { margin: 2px 0 14px; color: var(--muted); font-size: 0.92rem; }
+
+.details {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  margin-bottom: 16px;
+}
+.details summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 16px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+.details summary::-webkit-details-marker { display: none; }
+.details summary .sum { color: var(--muted); font-weight: 400; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; text-align: right; }
+.details summary svg { width: 18px; height: 18px; stroke: var(--muted); flex: none; transition: transform 0.15s; }
+.details[open] summary svg { transform: rotate(180deg); }
+.details .body { padding: 0 16px 8px; display: grid; gap: 10px; }
+.details dl { margin: 0; display: grid; gap: 10px; }
+.details dt { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.details dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.details dd.none { color: var(--muted); font-style: italic; }
+.details .acts { display: flex; flex-wrap: wrap; gap: 4px 16px; border-top: 1px solid var(--line); padding-top: 4px; }
+
+.secline { margin: 0 4px 8px; color: var(--muted); font-size: 0.9rem; }
+.secline strong { color: var(--ink); font-weight: 600; }
+.strip {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
+  margin-bottom: 18px;
+}
+.strip:empty { display: none; }
+.strip i { height: 8px; border-radius: 4px; background: var(--line); display: block; transition: background 0.2s; }
+.strip i.done { background: var(--accent); }
+.strip i.now { background: var(--plum); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 22px 18px 18px;
+}
+.rowhead { display: flex; align-items: center; gap: 14px; }
+.card.guide .rowhead { margin-bottom: 14px; }
+.rownum {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 4.2rem;
+  line-height: 0.9;
+  color: var(--plum);
+  min-width: 1ch;
+  font-variant-numeric: tabular-nums;
+}
+.rowmeta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rowlabel { color: var(--muted); font-size: 0.95rem; }
+.rowlabel strong { color: var(--ink); }
+.side {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.side.rs { background: var(--plum); color: var(--on-plum); }
+.side.ws { border: 2px solid var(--plum); color: var(--plum); padding: 1px 10px; }
+.patlabel { margin: 0 0 6px; color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.rep { background: var(--rep-bg); color: var(--rep-ink); border-radius: 8px; padding: 1px 8px; font-weight: 600; }
+.instr { margin: 0; font-size: 1.2rem; line-height: 1.75; overflow-wrap: anywhere; }
+.steplist { margin: 0; padding-left: 1.3em; font-size: 1.15rem; line-height: 1.6; display: grid; gap: 6px; }
+.termname { color: var(--accent); font-weight: 600; }
+.until {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg);
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+.until strong { color: var(--ink); }
+.techs:empty { display: none; }
+.techs { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+.techs h3 { margin: 0; font-family: var(--font-display); font-size: 1rem; }
+.tech { font-size: 0.97rem; color: var(--muted); }
+.tech b { display: block; color: var(--ink); font-weight: 600; }
+.endnote { text-align: center; display: grid; gap: 12px; justify-items: center; padding: 8px 0; }
+.endnote b { font-family: var(--font-display); font-size: 1.3rem; }
+
+.next { margin: 16px 4px 0; color: var(--muted); font-size: 0.95rem; }
+.next:empty { display: none; }
+.next strong { color: var(--ink); font-weight: 600; }
+.moveon { margin-top: 12px; }
+
+.tools {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 18px 4px 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.toolbtns { display: flex; gap: 14px; }
+
+.panel {
+  margin: 16px 0 0;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+}
+.panel h2 { margin: 0; font-family: var(--font-display); font-size: 1.05rem; }
+.panel .fields { display: flex; gap: 12px; flex-wrap: wrap; }
+.panel .actions { display: flex; gap: 10px; }
+.panel .actions .btn { flex: 1; }
+
+.field { flex: 1 1 140px; display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; color: var(--muted); min-width: 0; }
+.field input, .field select, .field textarea {
+  font-size: 1.05rem;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  min-height: 48px;
+  width: 100%;
+}
+.field textarea { resize: vertical; min-height: 96px; line-height: 1.45; }
+.field .sub { font-size: 0.8rem; }
+
+/* ---------- pattern screen ---------- */
+.overview { white-space: pre-wrap; color: var(--muted); font-size: 0.95rem; margin: 0; }
+.sec { display: grid; gap: 10px; margin-top: 18px; }
+.sec h3 { margin: 0; font-family: var(--font-display); font-size: 1.1rem; }
+.sec .rpt { margin: -6px 0 0; color: var(--muted); font-size: 0.9rem; }
+.rowcard { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
+.rowcard .patlabel { display: flex; gap: 8px; align-items: center; }
+.rowcard .instr { font-size: 1rem; line-height: 1.65; }
+.readbox { margin: 14px 0; padding: 14px 16px; border-radius: 16px; border: 1.5px dashed var(--line); display: grid; gap: 10px; }
+.readbox p { margin: 0; }
+
+/* ---------- PDF viewer ---------- */
+.pdf { margin-top: 18px; }
+.pdfbar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  background: var(--bg);
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.zoom { display: flex; gap: 6px; align-items: center; }
+.zoom button {
+  width: 44px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  font-weight: 700;
+  font-size: 1.15rem;
+  cursor: pointer;
+}
+.zoom button:disabled { opacity: 0.4; cursor: default; }
+.zoom span { min-width: 3.2em; text-align: center; }
+.pdfpages { overflow-x: auto; display: grid; gap: 12px; justify-items: start; -webkit-overflow-scrolling: touch; }
+.pg { position: relative; background: #fff; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); aspect-ratio: 0.7727; max-width: none; }
+.pg canvas { display: block; width: 100%; height: 100%; border-radius: 6px; }
+.pg .pgn { position: absolute; right: 8px; bottom: 6px; font-size: 0.75rem; color: #5d5a7a; background: rgba(255,255,255,0.85); padding: 0 6px; border-radius: 6px; }
+.pdfmsg { padding: 24px 4px; color: var(--muted); }
+.pdfmsg.warn { color: var(--danger); }
+
+/* ---------- settings ---------- */
+.setgroup { display: grid; gap: 10px; margin-bottom: 26px; }
+.setgroup h2 { margin: 0; font-family: var(--font-display); font-size: 1.15rem; }
+.setgroup p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+.setgroup a { color: var(--accent); }
+.row-inline { display: flex; gap: 10px; flex-wrap: wrap; }
+.row-inline .btn { flex: 1 1 160px; }
+
+/* ---------- dock ---------- */
+.dock {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 6;
+  padding-top: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(18px, env(safe-area-inset-left, 0px));
+  padding-right: max(18px, env(safe-area-inset-right, 0px));
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+}
+.dock-inner { max-width: 560px; margin: 0 auto; display: flex; gap: 10px; }
+.btn-back {
+  flex: none;
+  width: 64px;
+  border-radius: 18px;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.btn-back:disabled { opacity: 0.4; cursor: default; }
+.btn-back svg { width: 22px; height: 22px; stroke: var(--ink); }
+.btn-done {
+  flex: 1;
+  min-height: 64px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.btn-done:disabled { opacity: 0.45; cursor: default; }
+.btn-done:active { transform: scale(0.98); }
+.btn-done .dbox {
+  width: 30px; height: 30px; border-radius: 9px;
+  border: 2.5px solid var(--on-accent);
+  display: grid; place-items: center; flex: none;
+  transition: background 0.15s;
+}
+.btn-done .dbox svg { width: 18px; height: 18px; opacity: 0; stroke: var(--accent); }
+.btn-done.checked .dbox { background: var(--on-accent); }
+.btn-done.checked .dbox svg { opacity: 1; }
+.btn-done.pop { animation: pop 0.35s ease; }
+@keyframes pop { 0% { transform: scale(1); } 45% { transform: scale(1.03); } 100% { transform: scale(1); } }
+.slide { animation: slide 0.28s ease; }
+@keyframes slide { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+
+/* ---------- sheet + toast ---------- */
+.scrim {
+  position: fixed; inset: 0; z-index: 20;
+  background: var(--scrim);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.sheet {
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100% - 24px - env(safe-area-inset-top, 0px));
+  overflow-y: auto;
+  background: var(--surface);
+  border-radius: 22px 22px 0 0;
+  padding-top: 20px;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(18px, env(safe-area-inset-left, 0px));
+  padding-right: max(18px, env(safe-area-inset-right, 0px));
+  display: grid;
+  gap: 14px;
+  animation: rise 0.22s ease;
+}
+@media (min-width: 600px) { .scrim { align-items: center; } .sheet { border-radius: 22px; } }
+@keyframes rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.sheet h2 { margin: 0; font-family: var(--font-display); font-size: 1.3rem; }
+.sheet .from { margin: -10px 0 0; color: var(--muted); font-size: 0.92rem; overflow-wrap: anywhere; }
+.sheet .actions { display: flex; gap: 10px; margin-top: 4px; }
+.sheet .actions .btn { flex: 1; }
+.sheet .err { margin: 0; color: var(--danger); font-size: 0.92rem; }
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: calc(100% - 36px);
+  background: var(--ink);
+  color: var(--bg);
+  padding: 10px 16px;
+  border-radius: 14px;
+  font-size: 0.95rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-done.pop, .slide, .sheet { animation: none; }
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body>
+<main class="app" id="app">
+  <!-- HOME -->
+  <section id="vHome">
+    <header class="top">
+      <h1 class="brand">Knit Row Tracker</h1>
+      <button type="button" class="iconbtn" id="openSettings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </header>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tabProjects" aria-selected="true">Projects <span class="count" id="nProjects"></span></button>
+      <button type="button" role="tab" id="tabPatterns" aria-selected="false">Patterns <span class="count" id="nPatterns"></span></button>
+    </div>
+    <div id="pProjects"><div id="projectList"></div></div>
+    <div id="pPatterns" hidden>
+      <div class="addbar">
+        <button type="button" class="btn block" id="addPdf">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add a PDF pattern
+        </button>
+        <input type="file" id="pdfInput" accept="application/pdf,.pdf" hidden>
+        <p class="hint" id="addNote"></p>
+      </div>
+      <div id="patternList"></div>
+    </div>
+  </section>
+
+  <!-- PROJECT -->
+  <section id="vProject" hidden>
+    <div class="bar">
+      <button type="button" class="backlink" id="projBack"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>Projects</button>
+      <div class="tally" id="tally"></div>
+    </div>
+    <h1 class="ptitle" id="projName"></h1>
+    <p class="pmeta" id="projMeta"></p>
+
+    <details class="details" id="details">
+      <summary>Details <span class="sum" id="detailSum"></span><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="body">
+        <dl id="detailList"></dl>
+        <div class="acts">
+          <button type="button" class="linkbtn" id="editProj">Edit details</button>
+          <button type="button" class="linkbtn" id="finishProj">Mark finished</button>
+          <button type="button" class="linkbtn danger" id="delProj">Delete project</button>
+        </div>
+      </div>
+    </details>
+
+    <div class="tabs mini" id="projTabs" hidden>
+      <button type="button" id="tabSteps" aria-selected="true">Steps</button>
+      <button type="button" id="tabPdf" aria-selected="false">Original PDF</button>
+    </div>
+
+    <div id="trackerWrap">
+      <p class="secline" id="secline" hidden></p>
+      <div class="strip" id="strip"></div>
+      <section class="card" id="card" aria-live="polite"></section>
+      <p class="next" id="next"></p>
+      <section class="panel" id="place" hidden></section>
+      <div class="tools">
+        <span id="toolHint"></span>
+        <span class="toolbtns"><button type="button" class="linkbtn" id="setplace">Set my place</button><button type="button" class="linkbtn" id="reset">Start over</button></span>
+      </div>
+    </div>
+
+    <section class="pdf" id="projPdf" hidden></section>
+  </section>
+
+  <!-- PATTERN -->
+  <section id="vPattern" hidden>
+    <div class="bar">
+      <button type="button" class="backlink" id="patBack"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>Patterns</button>
+    </div>
+    <h1 class="ptitle" id="patName"></h1>
+    <p class="pmeta" id="patMeta"></p>
+    <div class="item-actions">
+      <button type="button" class="btn primary" id="patStart">Start project</button>
+      <button type="button" class="linkbtn" id="patRename">Rename</button>
+      <button type="button" class="linkbtn danger" id="patDelete">Delete pattern</button>
+    </div>
+    <p class="hint" id="patDelNote"></p>
+    <div id="patRead"></div>
+    <div class="tabs mini" id="patTabs" hidden>
+      <button type="button" id="ptSteps" aria-selected="true">Steps</button>
+      <button type="button" id="ptPdf" aria-selected="false">Original PDF</button>
+    </div>
+    <div id="patSteps"></div>
+    <section class="pdf" id="patPdf" hidden></section>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="vSettings" hidden>
+    <div class="bar">
+      <button type="button" class="backlink" id="setBack"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>Back</button>
+    </div>
+    <h1 class="ptitle" style="margin-bottom:18px">Settings</h1>
+
+    <div class="setgroup">
+      <h2>Pattern reading</h2>
+      <p>When you add a PDF, Claude reads it and turns it into row-by-row steps with techniques. This uses your own Anthropic API key, which is saved only on this device and sent only to Anthropic. Each pattern costs roughly a few cents to read.</p>
+      <p>Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</p>
+      <label class="field" for="apiKey">Anthropic API key
+        <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+      </label>
+      <div class="row-inline">
+        <button type="button" class="btn primary" id="saveKey">Save key</button>
+        <button type="button" class="btn" id="clearKey">Remove key</button>
+      </div>
+      <p id="keyNote"></p>
+    </div>
+
+    <div class="setgroup">
+      <h2>Backup</h2>
+      <p>Your patterns, PDFs and projects are stored on this device only. Download a backup to keep a copy or to move everything to another phone or computer, then restore it there.</p>
+      <div class="row-inline">
+        <button type="button" class="btn" id="exportBtn">Download backup</button>
+        <button type="button" class="btn" id="importBtn">Restore from backup</button>
+      </div>
+      <input type="file" id="importInput" accept="application/json,.json" hidden>
+      <p id="backupNote"></p>
+    </div>
+
+    <div class="setgroup">
+      <h2>Storage</h2>
+      <p id="storageNote">Checking storage…</p>
+    </div>
+  </section>
+</main>
+
+<div class="dock" id="dock" hidden>
+  <div class="dock-inner">
+    <button class="btn-back" id="back" type="button" aria-label="Go back one row">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <button class="btn-done" id="done" type="button">
+      <span class="dbox"><svg viewBox="0 0 24 24" fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg></span>
+      <span id="doneLabel">Row done</span>
+    </button>
+  </div>
+</div>
+
+<div class="scrim" id="scrim" hidden><form class="sheet" id="sheet" novalidate></form></div>
+<div class="toast" id="toast" hidden role="status"></div>
+
+<script src="vendor/pdf.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
