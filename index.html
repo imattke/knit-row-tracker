@@ -107,6 +107,9 @@ header.top {
   font-size: 1.05rem;
   letter-spacing: 0.01em;
 }
+.headright { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.syncstate { color: var(--muted); font-size: 0.8rem; text-align: right; }
+.syncstate.warn { color: var(--danger); }
 .iconbtn {
   width: 44px;
   height: 44px;
@@ -572,9 +575,10 @@ button.item:active { transform: scale(0.99); }
   <section id="vHome">
     <header class="top">
       <h1 class="brand">Knit Row Tracker</h1>
+      <span class="headright"><span class="syncstate" id="syncState" role="status"></span>
       <button type="button" class="iconbtn" id="openSettings" aria-label="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-      </button>
+      </button></span>
     </header>
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tabProjects" aria-selected="true">Projects <span class="count" id="nProjects"></span></button>
@@ -665,6 +669,26 @@ button.item:active { transform: scale(0.99); }
     <h1 class="ptitle" style="margin-bottom:18px">Settings</h1>
 
     <div class="setgroup">
+      <h2>Sync between devices</h2>
+      <p>Keep your patterns, PDFs and progress the same on your phone, iPad and laptop. Enter the sync password you set in Cloudflare on each device. Everything still works offline and catches up when you’re back online.</p>
+      <div id="syncOff">
+        <label class="field" for="syncPass">Sync password
+          <input id="syncPass" type="password" autocomplete="current-password" spellcheck="false">
+        </label>
+        <div class="row-inline" style="margin-top:10px">
+          <button type="button" class="btn primary" id="syncConnect">Turn on sync</button>
+        </div>
+      </div>
+      <div id="syncOn" hidden>
+        <div class="row-inline">
+          <button type="button" class="btn" id="syncNow">Sync now</button>
+          <button type="button" class="btn" id="syncDisconnect">Turn off sync</button>
+        </div>
+      </div>
+      <p id="syncNote"></p>
+    </div>
+
+    <div class="setgroup">
       <h2>Pattern reading</h2>
       <p>When you add a PDF, Claude reads it and turns it into row-by-row steps with techniques. This uses your own Anthropic API key, which is saved only on this device and sent only to Anthropic. Each pattern costs roughly a few cents to read.</p>
       <p>Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</p>
@@ -680,7 +704,7 @@ button.item:active { transform: scale(0.99); }
 
     <div class="setgroup">
       <h2>Backup</h2>
-      <p>Your patterns, PDFs and projects are stored on this device only. Download a backup to keep a copy or to move everything to another phone or computer, then restore it there.</p>
+      <p>Download a copy of your patterns, PDFs and projects as a file. Restoring it on any device adds anything that device is missing.</p>
       <div class="row-inline">
         <button type="button" class="btn" id="exportBtn">Download backup</button>
         <button type="button" class="btn" id="importBtn">Restore from backup</button>

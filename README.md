@@ -5,7 +5,7 @@ A personal knitting app that installs to your phone's home screen.
 - **Patterns:** a built-in 8-row repeat, plus any PDF patterns you add. Claude reads each PDF and turns it into row-by-row steps with technique explanations.
 - **Projects:** start a project from a pattern (name, start date, yarn, gauge, notes) and track the row you're on, with big buttons for "row finished" and back.
 - **Offline:** after the first visit the app works without a connection. Only reading a new pattern needs the internet.
-- **Private:** patterns, PDFs, projects and your API key are stored on your device only. Use Settings → Backup to move them to another device.
+- **Sync:** patterns, PDFs and progress sync between your devices through your own Cloudflare account (D1 + KV), protected by a sync password. Each device also keeps a full copy, so it works offline.
 
 It's a static site with no build step. Any static host works.
 
@@ -18,6 +18,18 @@ It's a static site with no build step. Any static host works.
 
 ### GitHub Pages
 Repo **Settings** → **Pages** → Source: **Deploy from a branch**, branch `main`, folder `/ (root)`.
+
+### Sync setup (Cloudflare)
+1. **Storage & Databases → D1 SQL Database → Create**: name it `knit-db`.
+2. **Storage & Databases → Workers KV → Create**: name it `knit-files`.
+3. Pages project → **Settings → Bindings → Add**:
+   - D1 database: variable name `DB` → `knit-db`
+   - KV namespace: variable name `FILES` → `knit-files`
+4. Pages project → **Settings → Variables and Secrets → Add**: type **Secret**, name `SYNC_PASSWORD`, value of your choice.
+5. **Deployments** → latest deployment → **⋯ → Retry deployment** so the settings take effect.
+6. On each device: app → Settings → enter the sync password → **Turn on sync**. Start with the device that has the most data.
+
+The sync API lives in `functions/api/[[path]].js`. The database table is created automatically.
 
 ## Install on a phone
 - **iPhone (Safari):** open the site → Share → **Add to Home Screen**.

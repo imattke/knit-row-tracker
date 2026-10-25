@@ -108,14 +108,173 @@ const DB = (() => {
 })();
 
 const S = { patterns: {}, projects: {} };
-function save(kind, obj) {
-  obj.t = Date.now();
+// opts.keepT keeps the object's own timestamp; opts.local skips syncing
+function save(kind, obj, opts) {
+  opts = opts || {};
+  if (!opts.keepT) obj.t = Date.now();
   S[kind][obj.id] = obj;
   DB.put(kind, JSON.parse(JSON.stringify(obj))).catch((e) => toast("Couldn't save: " + (e && e.message ? e.message : "storage error")));
+  if (!opts.local) Sync.mark(kind, obj.id, false);
 }
 function remove(kind, id) {
   delete S[kind][id];
   DB.del(kind, id).catch(() => {});
+  Sync.mark(kind, id, true);
+}
+
+/* ============================================================
+   Sync between devices through the Cloudflare /api functions
+   ============================================================ */
+const Sync = {
+  state: "off", code: "", timer: null, running: false, again: false,
+  pass() { return lsGet("knit-sync-pass") || ""; },
+  readMap(k) { try { return JSON.parse(lsGet(k) || "{}"); } catch (e) { return {}; } },
+  dirty() { return this.readMap("knit-dirty"); },
+  dirtyFiles() { return this.readMap("knit-dirty-files"); },
+  mark(kind, id, deleted) {
+    const d = this.dirty();
+    d[kind + ":" + id] = { deleted: !!deleted, t: Date.now() };
+    lsSet("knit-dirty", JSON.stringify(d));
+    this.soon();
+  },
+  markFile(id) {
+    const f = this.dirtyFiles();
+    f[id] = 1;
+    lsSet("knit-dirty-files", JSON.stringify(f));
+    this.soon();
+  },
+  markAll() {
+    Object.values(S.patterns).forEach((p) => { if (p.t !== 1) this.mark("patterns", p.id, false); });
+    Object.values(S.projects).forEach((p) => { if (p.t !== 1) this.mark("projects", p.id, false); });
+  },
+  soon(ms) {
+    if (!this.pass()) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.run(), ms == null ? 2000 : ms);
+  },
+  async api(path, opts, pass) {
+    opts = opts || {};
+    const res = await fetch("api/" + path, { ...opts, cache: "no-store", headers: { ...(opts.headers || {}), "x-sync-key": pass || this.pass() } });
+    if (!res.ok) {
+      let body = {};
+      try { body = await res.json(); } catch (e) {}
+      const err = new Error(body.error || "HTTP " + res.status);
+      err.status = res.status; err.code = body.error || ""; err.missing = body.missing;
+      throw err;
+    }
+    return res;
+  },
+  set(state, code) { this.state = state; this.code = code || ""; renderSyncState(); },
+  async run() {
+    if (!this.pass()) { this.set("off"); return; }
+    if (this.running) { this.again = true; return; }
+    this.running = true;
+    clearTimeout(this.timer);
+    this.set("syncing");
+    try {
+      if (!lsGet("knit-synced-once")) {
+        await this.pull(true);
+        this.markAll();
+        const files = await DB.all("files");
+        files.forEach((f) => this.markFile(f.id));
+        clearTimeout(this.timer);
+      }
+      await this.push();
+      await this.pull(false);
+      lsSet("knit-synced-once", "1");
+      this.set("ok");
+    } catch (e) {
+      this.set(e && e.status ? "error" : "offline", e && e.code);
+    } finally {
+      this.running = false;
+      if (this.again) { this.again = false; this.soon(300); }
+    }
+  },
+  async push() {
+    const d = this.dirty(), keys = Object.keys(d);
+    if (keys.length) {
+      const docs = keys.map((k) => {
+        const i = k.indexOf(":"), kind = k.slice(0, i), id = k.slice(i + 1);
+        const obj = S[kind] && S[kind][id];
+        return d[k].deleted || !obj ? { kind, id, t: d[k].t, deleted: true } : { kind, id, t: obj.t || 0, data: obj };
+      });
+      await this.api("docs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ docs }) });
+      const later = this.dirty();
+      keys.forEach((k) => { if (later[k] && later[k].t === d[k].t) delete later[k]; });
+      lsSet("knit-dirty", JSON.stringify(later));
+    }
+    for (const id of Object.keys(this.dirtyFiles())) {
+      const f = await DB.get("files", id);
+      if (f) await this.api("files/" + encodeURIComponent(id), { method: "PUT", headers: { "content-type": "application/pdf" }, body: f.data });
+      const later = this.dirtyFiles();
+      delete later[id];
+      lsSet("knit-dirty-files", JSON.stringify(later));
+    }
+  },
+  async pull(full) {
+    const since = full ? 0 : Number(lsGet("knit-pulled")) || 0;
+    const res = await this.api("docs?since=" + since);
+    const { docs, now } = await res.json();
+    let changed = false;
+    for (const d of docs) {
+      if (!S[d.kind]) continue;
+      const local = S[d.kind][d.id];
+      if (d.deleted) {
+        if (local && (local.t || 0) <= d.t) { delete S[d.kind][d.id]; await DB.del(d.kind, d.id); changed = true; }
+      } else if (d.data && (!local || (d.data.t || 0) > (local.t || 0))) {
+        if (reading[d.id]) continue; // this device is mid-read; its result will win
+        S[d.kind][d.id] = d.data;
+        await DB.put(d.kind, d.data);
+        changed = true;
+      }
+    }
+    if (full) {
+      // first connection on a device that already has data elsewhere: drop the untouched starter project
+      const seed = S.projects["prj-first"];
+      if (seed && seed.t === 1 && docs.some((d) => d.kind === "projects" && !d.deleted && d.id !== "prj-first")) {
+        delete S.projects["prj-first"]; await DB.del("projects", "prj-first"); changed = true;
+      }
+    }
+    lsSet("knit-pulled", String(now));
+    if (changed) onRemoteChange();
+  }
+};
+
+// a PDF from this device, or downloaded from your account the first time it's needed
+async function getFile(id) {
+  let f = await DB.get("files", id);
+  if (!f && Sync.pass()) {
+    const res = await Sync.api("files/" + encodeURIComponent(id));
+    f = { id, type: "application/pdf", data: await res.arrayBuffer() };
+    await DB.put("files", f);
+  }
+  if (!f) throw new Error(Sync.pass() ? "The PDF for this pattern isn’t on this device or in your account." : "The PDF for this pattern isn’t on this device. Turn on sync in Settings to get it from your other devices.");
+  return f;
+}
+
+function onRemoteChange() {
+  if (view.name === "project") {
+    if (!S.projects[view.id]) return goHome("projects");
+    rerenderProject();
+  } else if (view.name === "pattern") {
+    if (!S.patterns[view.id]) return goHome("patterns");
+    renderPatternBody();
+  } else if (view.name === "home") renderHome();
+}
+
+function renderSyncState() {
+  const el = $("syncState");
+  if (!el) return;
+  const map = {
+    off: "",
+    syncing: "Syncing…",
+    ok: "Synced",
+    offline: "Offline · saved here",
+    error: Sync.code === "wrong_password" ? "Sync password wrong" : Sync.code === "not_configured" ? "Sync not set up" : "Sync problem"
+  };
+  el.textContent = map[Sync.state] || "";
+  el.className = "syncstate" + (Sync.state === "error" ? " warn" : "");
+  if (view.name === "settings") renderSyncSettings();
 }
 
 async function loadAll() {
@@ -124,17 +283,18 @@ async function loadAll() {
   prjs.forEach((p) => { S.projects[p.id] = p; });
   // a read that was running when the app closed can't resume
   Object.values(S.patterns).forEach((p) => {
-    if (p.guideStatus === "reading") { p.guideStatus = "error"; p.guideError = "Reading stopped because the app was closed. Tap Read pattern to try again."; save("patterns", p); }
+    if (p.guideStatus === "reading") { p.guideStatus = "error"; p.guideError = "Reading stopped because the app was closed. Tap Read pattern to try again."; save("patterns", p, { keepT: true, local: true }); }
   });
   if (!lsGet("knit-setup-v1")) {
-    if (!S.patterns[BUILTIN_ID]) save("patterns", { id: BUILTIN_ID, kind: "builtin", name: "8-row repeat", createdAt: 0 });
+    // starter records carry the oldest possible time so any real edit from another device wins
+    if (!S.patterns[BUILTIN_ID]) save("patterns", { id: BUILTIN_ID, kind: "builtin", name: "8-row repeat", createdAt: 0, t: 1 }, { keepT: true, local: true });
     if (!Object.keys(S.projects).length) {
       // carries over the place from the earlier Claude-hosted tracker
       save("projects", {
-        id: newId("prj-"), name: "My first project", patternId: BUILTIN_ID, started: today(),
+        id: "prj-first", name: "My first project", patternId: BUILTIN_ID, started: today(),
         yarn: "", gauge: "", notes: "", status: "active",
-        progress: { sec: 0, row: 6, rep: 2 }, createdAt: Date.now()
-      });
+        progress: { sec: 0, row: 6, rep: 2 }, createdAt: Date.now(), t: 1
+      }, { keepT: true, local: true });
     }
     lsSet("knit-setup-v1", "1");
   }
@@ -421,6 +581,7 @@ $("pdfInput").addEventListener("change", function () {
         }
         const fileId = newId("file-");
         await DB.put("files", { id: fileId, type: "application/pdf", data: buf });
+        Sync.markFile(fileId);
         const pat = { id: newId("pat-"), kind: "pdf", name: v.name, fileId, fileName: file.name, size: file.size, pages, createdAt: Date.now(), guideStatus: "none" };
         save("patterns", pat);
         view.tab = "patterns";
@@ -502,8 +663,7 @@ How to structure it:
 Never add rows the pattern doesn't contain, and don't skip any.`;
 
 async function pdfBase64(fileId) {
-  const f = await DB.get("files", fileId);
-  if (!f) throw new Error("The PDF file for this pattern is missing.");
+  const f = await getFile(fileId);
   const blob = new Blob([f.data], { type: "application/pdf" });
   const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
   return String(url).split(",")[1];
@@ -967,7 +1127,11 @@ $("patRename").addEventListener("click", () => {
 armed($("patDelete"), () => {
   const pat = S.patterns[view.id];
   if (!pat || usesOf(pat.id) || pat.kind === "builtin") return;
-  if (pat.fileId) DB.del("files", pat.fileId).catch(() => {});
+  if (pat.fileId) {
+    DB.del("files", pat.fileId).catch(() => {});
+    const df = Sync.dirtyFiles(); delete df[pat.fileId]; lsSet("knit-dirty-files", JSON.stringify(df));
+    if (Sync.pass()) Sync.api("files/" + encodeURIComponent(pat.fileId), { method: "DELETE" }).catch(() => {});
+  }
   remove("patterns", pat.id);
   goHome("patterns");
   toast("Pattern deleted");
@@ -987,8 +1151,7 @@ const docCache = {};
 function loadPdf(fileId) {
   if (!docCache[fileId]) {
     docCache[fileId] = (async () => {
-      const f = await DB.get("files", fileId);
-      if (!f) throw new Error("The PDF file for this pattern is missing.");
+      const f = await getFile(fileId);
       return pdfjsLib.getDocument({ data: new Uint8Array(f.data.slice(0)), isEvalSupported: false }).promise;
     })();
     docCache[fileId].catch(() => { delete docCache[fileId]; });
@@ -1118,6 +1281,7 @@ function openSettings() {
   $("keyNote").className = "hint";
   $("keyNote").textContent = k ? "A key is saved on this device (ends in …" + k.slice(-4) + ")." : "No key saved yet.";
   $("backupNote").textContent = "";
+  renderSyncSettings();
   $("storageNote").textContent = "Checking storage…";
   if (navigator.storage && navigator.storage.estimate) {
     Promise.all([navigator.storage.estimate(), navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false)]).then(([est, persisted]) => {
@@ -1128,6 +1292,51 @@ function openSettings() {
   window.scrollTo(0, 0);
 }
 $("openSettings").addEventListener("click", openSettings);
+
+function syncErrorText(code, missing) {
+  if (code === "wrong_password") return "That password doesn’t match the SYNC_PASSWORD set in Cloudflare.";
+  if (code === "not_configured") return "Sync isn’t set up in Cloudflare yet" + (missing && missing.length ? " (missing: " + missing.join(", ") + ")" : "") + ". Add the settings, then redeploy.";
+  return "";
+}
+function renderSyncSettings() {
+  const on = !!Sync.pass();
+  $("syncOff").hidden = on;
+  $("syncOn").hidden = !on;
+  const note = $("syncNote");
+  note.className = "hint";
+  if (!on) { note.textContent = ""; return; }
+  if (Sync.state === "syncing") note.textContent = "Syncing…";
+  else if (Sync.state === "ok") note.textContent = "Sync is on. Changes on this device reach your other devices within a few seconds.";
+  else if (Sync.state === "offline") note.textContent = "You’re offline. Changes are saved on this device and will sync when you’re back online.";
+  else if (Sync.state === "error") { note.className = "hint warn"; note.textContent = syncErrorText(Sync.code) || "Sync ran into a problem. Tap Sync now to try again."; }
+  else note.textContent = "Sync is on.";
+}
+$("syncConnect").addEventListener("click", async () => {
+  const pass = $("syncPass").value;
+  const note = $("syncNote"), btn = $("syncConnect");
+  if (!pass) { note.className = "hint warn"; note.textContent = "Enter the sync password first."; return; }
+  btn.disabled = true; note.className = "hint"; note.textContent = "Checking…";
+  try {
+    await Sync.api("ping", {}, pass);
+    lsSet("knit-sync-pass", pass);
+    lsSet("knit-synced-once", null);
+    lsSet("knit-pulled", null);
+    $("syncPass").value = "";
+    await Sync.run();
+    renderSyncSettings();
+    toast("Sync is on");
+  } catch (e) {
+    note.className = "hint warn";
+    note.textContent = syncErrorText(e.code, e.missing) || (e.status === 404 ? "This copy of the app has no sync server. Open it from your Cloudflare address." : "Couldn’t reach the sync server. Check your connection and try again.");
+  } finally { btn.disabled = false; }
+});
+$("syncNow").addEventListener("click", () => Sync.run());
+$("syncDisconnect").addEventListener("click", () => {
+  lsSet("knit-sync-pass", null);
+  Sync.set("off");
+  renderSyncSettings();
+  toast("Sync is off on this device. Your data stays here.");
+});
 $("setBack").addEventListener("click", () => goHome());
 $("saveKey").addEventListener("click", () => {
   const k = $("apiKey").value.trim();
@@ -1212,7 +1421,14 @@ function keepAwake(on) {
     } else if (wakeLock) { wakeLock.release(); wakeLock = null; }
   } catch (e) {}
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && view.name === "project") keepAwake(true); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    if (view.name === "project") keepAwake(true);
+    Sync.soon(200);
+  } else if (Object.keys(Sync.dirty()).length) Sync.run(); // send unsaved changes before the app is put away
+});
+window.addEventListener("online", () => Sync.soon(200));
+setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); }, 45000);
 
 /* ============================================================
    Start
@@ -1222,6 +1438,7 @@ loadAll().then(() => {
   const last = lsGet("knit-last");
   if (last && S.projects[last]) openProject(last);
   else { show("home"); renderHome(); }
+  if (Sync.pass()) Sync.run();
 }).catch((e) => {
   document.getElementById("app").innerHTML = '<p class="pdfmsg warn">This browser couldn’t open the app’s storage (' + esc(e && e.message ? e.message : "unknown error") + "). Private browsing can block it.</p>";
 });
