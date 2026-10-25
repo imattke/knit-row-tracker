@@ -205,7 +205,15 @@ const Sync = {
     }
     for (const id of Object.keys(this.dirtyFiles())) {
       const f = await DB.get("files", id);
-      if (f) await this.api("files/" + encodeURIComponent(id), { method: "PUT", headers: { "content-type": "application/pdf" }, body: f.data });
+      if (f) {
+        const base = "files/" + encodeURIComponent(id) + "/";
+        const n = Math.max(1, Math.ceil(f.data.byteLength / FILE_PART));
+        for (let i = 0; i < n; i++) {
+          await this.api(base + i, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: f.data.slice(i * FILE_PART, (i + 1) * FILE_PART) });
+        }
+        // the piece count goes last, so a device never sees a half-uploaded file
+        await this.api(base + "meta", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ parts: n, size: f.data.byteLength }) });
+      }
       const later = this.dirtyFiles();
       delete later[id];
       lsSet("knit-dirty-files", JSON.stringify(later));
@@ -240,12 +248,25 @@ const Sync = {
   }
 };
 
+const FILE_PART = 20 * 1048576;
+
 // a PDF from this device, or downloaded from your account the first time it's needed
 async function getFile(id) {
   let f = await DB.get("files", id);
   if (!f && Sync.pass()) {
-    const res = await Sync.api("files/" + encodeURIComponent(id));
-    f = { id, type: "application/pdf", data: await res.arrayBuffer() };
+    const base = "files/" + encodeURIComponent(id);
+    const meta = await (await Sync.api(base + "/meta")).json();
+    let data;
+    if (!meta.parts) data = await (await Sync.api(base)).arrayBuffer();
+    else {
+      const pieces = [];
+      for (let i = 0; i < meta.parts; i++) pieces.push(new Uint8Array(await (await Sync.api(base + "/" + i)).arrayBuffer()));
+      const out = new Uint8Array(pieces.reduce((s, p) => s + p.length, 0));
+      let at = 0;
+      pieces.forEach((p) => { out.set(p, at); at += p.length; });
+      data = out.buffer;
+    }
+    f = { id, type: "application/pdf", data };
     await DB.put("files", f);
   }
   if (!f) throw new Error(Sync.pass() ? "The PDF for this pattern isn’t on this device or in your account." : "The PDF for this pattern isn’t on this device. Turn on sync in Settings to get it from your other devices.");
@@ -562,7 +583,7 @@ $("pdfInput").addEventListener("change", function () {
   if (!file) return;
   const note = $("addNote");
   if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { note.className = "hint warn"; note.textContent = "That file isn’t a PDF. Choose a .pdf pattern file."; return; }
-  if (file.size > 30 * 1048576) { note.className = "hint warn"; note.textContent = "That PDF is " + fmtSize(file.size) + ". The limit is 30 MB."; return; }
+  if (file.size > 150 * 1048576) { note.className = "hint warn"; note.textContent = "That PDF is " + fmtSize(file.size) + ". The limit is 150 MB."; return; }
   openSheet({
     title: "Add a PDF pattern", from: file.name + " · " + fmtSize(file.size), submit: "Add pattern", busy: "Adding…",
     fields: [{ name: "name", label: "Pattern name", value: file.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() }],
@@ -662,11 +683,58 @@ How to structure it:
 
 Never add rows the pattern doesn't contain, and don't skip any.`;
 
-async function pdfBase64(fileId) {
+// Claude takes at most 32 MB per request and base64 adds a third, so bigger PDFs go as page images plus page text
+const DIRECT_PDF_LIMIT = 23 * 1048576;
+const IMAGE_BUDGET = 27 * 1048576;
+
+async function patternContent(fileId, onStatus) {
   const f = await getFile(fileId);
-  const blob = new Blob([f.data], { type: "application/pdf" });
-  const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
-  return String(url).split(",")[1];
+  if (f.data.byteLength <= DIRECT_PDF_LIMIT) {
+    const data = await bufToB64(f.data);
+    return [
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data } },
+      { type: "text", text: "Turn this pattern into the row-by-row guide." }
+    ];
+  }
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(f.data.slice(0)), isEvalSupported: false }).promise;
+  try {
+    if (doc.numPages > 100) throw new Error("This PDF has " + doc.numPages + " pages. Claude can read up to 100 pages of a large PDF at once.");
+    // page text is the same at every image size, so read it once
+    const texts = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const tc = await (await doc.getPage(i)).getTextContent();
+      texts.push(tc.items.map((it) => (it.str || "") + (it.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+\n/g, "\n").trim());
+    }
+    for (const [maxSide, quality] of [[1568, 0.72], [1280, 0.6], [1000, 0.5]]) {
+      const blocks = [];
+      let total = 0;
+      for (let i = 1; i <= doc.numPages; i++) {
+        onStatus("Preparing page " + i + " of " + doc.numPages + "…");
+        const page = await doc.getPage(i);
+        const vp1 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: maxSide / Math.max(vp1.width, vp1.height) });
+        const c = document.createElement("canvas");
+        c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        const jpeg = c.toDataURL("image/jpeg", quality).split(",")[1];
+        c.width = 0; c.height = 0;
+        const text = texts[i - 1];
+        blocks.push({ type: "text", text: "Page " + i + (text ? " text:\n" + text : " (no text layer; read it from the image)") });
+        blocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: jpeg } });
+        total += jpeg.length + text.length;
+        if (total > IMAGE_BUDGET) break;
+      }
+      if (total <= IMAGE_BUDGET) {
+        blocks.push({ type: "text", text: "The pattern PDF was too large to attach, so each page is given as an image together with the text extracted from it. Use the text for exact wording and numbers, and the images for charts, schematics and layout. Turn this pattern into the row-by-row guide." });
+        return blocks;
+      }
+    }
+    throw new Error("This PDF is too large to send to Claude, even after shrinking its pages.");
+  } finally {
+    doc.destroy();
+  }
 }
 
 async function readPattern(patId) {
@@ -681,20 +749,16 @@ async function readPattern(patId) {
   try {
     const { Anthropic } = await import("./vendor/anthropic-sdk.mjs");
     const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2 });
-    const data = await pdfBase64(pat.fileId);
+    const content = await patternContent(pat.fileId, (msg) => { reading[patId].msg = msg; updateReadProgress(patId); });
+    reading[patId].msg = "Claude is reading the pattern…";
+    updateReadProgress(patId);
     const body = {
       model: "claude-opus-5-5",
       max_tokens: 64000,
       thinking: { type: "adaptive" },
       output_config: { effort: "high", format: { type: "json_schema", schema: GUIDE_SCHEMA } },
       system: SYSTEM_PROMPT,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "document", source: { type: "base64", media_type: "application/pdf", data } },
-          { type: "text", text: "Turn this pattern into the row-by-row guide." }
-        ]
-      }]
+      messages: [{ role: "user", content }]
     };
     let message;
     const runStream = async (req) => {
@@ -743,7 +807,7 @@ function explainError(e) {
   if (st === 401) return "Your API key wasn’t accepted. Check it in Settings.";
   if (st === 403) return "Your API key doesn’t have permission to use this model.";
   if (st === 429) return "Too many requests right now. Wait a minute and try again.";
-  if (st === 413) return "This PDF is too large to send to Claude.";
+  if (st === 413) return "This pattern was too large to send to Claude in one request.";
   if (st && st >= 500) return "Anthropic’s service had a problem. Try again in a moment.";
   if (e instanceof SyntaxError) return "Claude’s answer couldn’t be understood. Try reading the pattern again.";
   if (e && /fetch|network|Load failed/i.test(String(e.message))) return "Couldn’t reach Anthropic. Check your connection and keep the app open while it reads.";
@@ -751,7 +815,9 @@ function explainError(e) {
 }
 function updateReadProgress(patId) {
   const el = document.querySelector('[data-progress="' + patId + '"]');
-  if (el) el.textContent = "Writing steps… " + reading[patId].chars.toLocaleString() + " characters so far. Keep the app open.";
+  if (!el) return;
+  const r = reading[patId];
+  el.textContent = r.chars ? "Writing steps… " + r.chars.toLocaleString() + " characters so far. Keep the app open." : (r.msg || "Sending the PDF…") + " Keep the app open.";
 }
 
 /* ============================================================
@@ -1068,7 +1134,7 @@ function renderPatternInfo() {
   $("patRead").innerHTML = rb;
   if ($("readBtn")) $("readBtn").addEventListener("click", () => readPattern(pat.id));
   if ($("goSettings")) $("goSettings").addEventListener("click", openSettings);
-  if (reading[pat.id] && reading[pat.id].chars) updateReadProgress(pat.id);
+  if (reading[pat.id]) updateReadProgress(pat.id);
 }
 function renderPatternBody() {
   const pat = S.patterns[view.id];

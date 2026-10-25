@@ -80,23 +80,58 @@ export async function onRequest({ request, env, params }) {
     }
   }
 
+  // PDFs are stored in pieces of up to 20 MB (a KV value holds at most 25 MB):
+  //   files/<id>/meta  {parts}     files/<id>/<n>  piece n
+  // files/<id> on its own is a whole file stored in one piece.
   if (route === "files" && ID_RE.test(parts[1] || "")) {
-    const name = "file:" + parts[1];
-    if (method === "GET") {
-      const buf = await env.FILES.get(name, "arrayBuffer");
-      if (!buf) return json({ error: "not_found" }, 404);
-      return new Response(buf, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+    const id = parts[1], sub = parts[2];
+    const bin = (buf) => new Response(buf, { headers: { "content-type": "application/octet-stream", "cache-control": "no-store" } });
+
+    if (sub === "meta") {
+      if (method === "GET") {
+        const meta = await env.FILES.get("file:" + id + ":meta", "json");
+        if (meta) return json(meta);
+        const whole = await env.FILES.get("file:" + id, "stream");
+        if (whole) { await whole.cancel(); return json({ parts: 0 }); }
+        return json({ error: "not_found" }, 404);
+      }
+      if (method === "PUT") {
+        let meta;
+        try { meta = await request.json(); } catch (e) { return json({ error: "bad_json" }, 400); }
+        const n = Number(meta && meta.parts);
+        if (!Number.isInteger(n) || n < 1 || n > 50) return json({ error: "bad_parts" }, 400);
+        await env.FILES.put("file:" + id + ":meta", JSON.stringify({ parts: n, size: Number(meta.size) || 0 }));
+        return json({ ok: true });
+      }
     }
-    if (method === "PUT") {
-      const buf = await request.arrayBuffer();
-      if (!buf.byteLength) return json({ error: "empty" }, 400);
-      if (buf.byteLength > 25 * 1024 * 1024) return json({ error: "too_large" }, 413);
-      await env.FILES.put(name, buf);
-      return json({ ok: true });
+
+    if (sub !== undefined && /^\d{1,2}$/.test(sub)) {
+      const name = "file:" + id + ":" + sub;
+      if (method === "GET") {
+        const buf = await env.FILES.get(name, "arrayBuffer");
+        return buf ? bin(buf) : json({ error: "not_found" }, 404);
+      }
+      if (method === "PUT") {
+        const buf = await request.arrayBuffer();
+        if (!buf.byteLength) return json({ error: "empty" }, 400);
+        if (buf.byteLength > 24 * 1024 * 1024) return json({ error: "too_large" }, 413);
+        await env.FILES.put(name, buf);
+        return json({ ok: true });
+      }
     }
-    if (method === "DELETE") {
-      await env.FILES.delete(name);
-      return json({ ok: true });
+
+    if (sub === undefined) {
+      if (method === "GET") {
+        const buf = await env.FILES.get("file:" + id, "arrayBuffer");
+        return buf ? bin(buf) : json({ error: "not_found" }, 404);
+      }
+      if (method === "DELETE") {
+        const meta = await env.FILES.get("file:" + id + ":meta", "json");
+        const names = ["file:" + id, "file:" + id + ":meta"];
+        for (let i = 0; meta && i < meta.parts; i++) names.push("file:" + id + ":" + i);
+        await Promise.all(names.map((n) => env.FILES.delete(n)));
+        return json({ ok: true });
+      }
     }
   }
 
