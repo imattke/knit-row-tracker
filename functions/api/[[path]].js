@@ -4,6 +4,8 @@
 //   DB             D1 database binding (patterns and projects)
 //   FILES          KV namespace binding (pattern PDFs)
 //   SYNC_PASSWORD  secret; the app sends it in the X-Sync-Key header
+//   ANTHROPIC_API_KEY  optional secret; lets every signed-in device read patterns
+//                      without keeping a key of its own
 //
 // Routes:
 //   GET    /api/ping                 check the password
@@ -12,6 +14,7 @@
 //   GET    /api/files/<id>           download a stored PDF
 //   PUT    /api/files/<id>           upload a PDF
 //   DELETE /api/files/<id>           remove a PDF
+//   POST   /api/claude/v1/messages   pass a pattern-reading request to Anthropic with the stored key
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -48,7 +51,25 @@ export async function onRequest({ request, env, params }) {
   const route = parts[0] || "";
   const method = request.method;
 
-  if (route === "ping") return json({ ok: true });
+  if (route === "ping") return json({ ok: true, claude: !!env.ANTHROPIC_API_KEY });
+
+  if (route === "claude") {
+    if (!env.ANTHROPIC_API_KEY) return json({ error: "no_claude_key" }, 503);
+    if (method !== "POST" || parts.slice(1).join("/") !== "v1/messages") return json({ error: "not_found" }, 404);
+    const headers = {
+      "content-type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY,
+      "anthropic-version": request.headers.get("anthropic-version") || "2023-06-01"
+    };
+    const beta = request.headers.get("anthropic-beta");
+    if (beta) headers["anthropic-beta"] = beta;
+    const upstream = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: await request.arrayBuffer() });
+    // stream Anthropic's answer straight back to the app
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: { "content-type": upstream.headers.get("content-type") || "application/json", "cache-control": "no-store" }
+    });
+  }
 
   if (route === "docs") {
     await ensureTable(env.DB);

@@ -172,6 +172,11 @@ const Sync = {
     clearTimeout(this.timer);
     this.set("syncing");
     try {
+      if (!this.checkedServer) {
+        const info = await (await this.api("ping")).json();
+        lsSet("knit-server-claude", info.claude ? "1" : null);
+        this.checkedServer = true;
+      }
       if (!lsGet("knit-synced-once")) {
         await this.pull(true);
         this.markAll();
@@ -489,7 +494,7 @@ function renderHome() {
   }
 
   $("addNote").className = "hint";
-  $("addNote").textContent = getKey() ? "Claude will read each PDF and turn it into row-by-row steps." : "Add your Anthropic API key in Settings and Claude will turn each PDF into row-by-row steps.";
+  $("addNote").textContent = canRead() ? "Claude will read each PDF and turn it into row-by-row steps." : "Add your Anthropic API key in Settings and Claude will turn each PDF into row-by-row steps.";
   $("patternList").innerHTML = '<ul class="list">' + pats.map((p) => {
     const st = patternStatus(p);
     return '<li class="item"><div><p class="item-name">' + esc(p.name) + '</p><p class="item-meta">' + esc(patternMeta(p)) + '</p></div><div class="chips"><span class="chip ' + st.cls + '">' + esc(st.text) + "</span></div>" +
@@ -607,7 +612,7 @@ $("pdfInput").addEventListener("change", function () {
         save("patterns", pat);
         view.tab = "patterns";
         renderHome();
-        if (getKey()) readPattern(pat.id);
+        if (canRead()) readPattern(pat.id);
       })();
     }
   });
@@ -618,6 +623,9 @@ $("pdfInput").addEventListener("change", function () {
    ============================================================ */
 const KEY_NAME = "knit-anthropic-key";
 const getKey = () => lsGet(KEY_NAME) || "";
+// the Cloudflare app can hold the key instead (ANTHROPIC_API_KEY secret), so any synced device can read patterns
+const serverKey = () => !!Sync.pass() && lsGet("knit-server-claude") === "1";
+const canRead = () => serverKey() || !!getKey();
 const reading = {};
 
 const GUIDE_SCHEMA = {
@@ -739,16 +747,17 @@ async function patternContent(fileId, onStatus, asImages) {
 
 async function readPattern(patId) {
   const pat = S.patterns[patId];
-  const key = getKey();
   if (!pat || pat.kind !== "pdf" || reading[patId]) return;
-  if (!key) { toast("Add your API key in Settings first."); return; }
+  if (!canRead()) { toast("Add your API key in Settings first."); return; }
   reading[patId] = { chars: 0 };
   pat.guideStatus = "reading"; pat.guideError = "";
   save("patterns", pat);
   refresh();
   try {
     const { Anthropic } = await import("./vendor/anthropic-sdk.mjs");
-    const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2 });
+    const client = serverKey()
+      ? new Anthropic({ apiKey: "stored-in-cloudflare", baseURL: new URL("api/claude", location.href).href, defaultHeaders: { "x-sync-key": Sync.pass() }, dangerouslyAllowBrowser: true, maxRetries: 2 })
+      : new Anthropic({ apiKey: getKey(), dangerouslyAllowBrowser: true, maxRetries: 2 });
     const onStatus = (msg) => { reading[patId].msg = msg; reading[patId].chars = 0; updateReadProgress(patId); };
     let content = await patternContent(pat.fileId, onStatus, false);
     const direct = content[0].type === "document";
@@ -818,6 +827,9 @@ async function readPattern(patId) {
 }
 function explainError(e) {
   const st = e && e.status;
+  const proxyCode = e && e.error && typeof e.error.error === "string" ? e.error.error : "";
+  if (proxyCode === "no_claude_key") return "The API key isn’t set in Cloudflare yet. Add the ANTHROPIC_API_KEY secret, or save a key in Settings.";
+  if (proxyCode === "wrong_password") return "Your sync password no longer matches Cloudflare. Turn sync off and on again in Settings.";
   if (st === 401) return "Your API key wasn’t accepted. Check it in Settings.";
   if (st === 403) return "Your API key doesn’t have permission to use this model.";
   if (st === 429) return "Too many requests right now. Wait a minute and try again.";
@@ -1045,7 +1057,7 @@ function renderTracker(animate) {
       const st = pat.guideStatus;
       if (reading[pat.id]) h += '<div class="until">Claude is turning this pattern into row-by-row steps. You can keep counting rows meanwhile.</div>';
       else if (st === "error") h += '<div class="until">Claude couldn’t read this pattern yet. Open it from Patterns to try again.</div>';
-      else if (!getKey()) h += '<div class="until">Add your API key in Settings to get row-by-row steps for this pattern.</div>';
+      else if (!canRead()) h += '<div class="until">Add your API key in Settings to get row-by-row steps for this pattern.</div>';
       else h += '<div class="until"><button type="button" class="btn block" id="readNow">Turn into row-by-row steps</button></div>';
     }
     card.className = "card";
@@ -1165,7 +1177,7 @@ function renderPatternInfo() {
   if (pat.kind === "pdf") {
     if (reading[pat.id]) rb = '<div class="readbox"><p><b>Claude is reading this pattern</b></p><p class="hint" data-progress="' + esc(pat.id) + '">Sending the PDF… Keep the app open.</p></div>';
     else if (pat.guideStatus === "error") rb = '<div class="readbox"><p class="hint warn">' + esc(pat.guideError) + '</p><button type="button" class="btn" id="readBtn">Read pattern again</button></div>';
-    else if (pat.guideStatus !== "ready") rb = getKey()
+    else if (pat.guideStatus !== "ready") rb = canRead()
       ? '<div class="readbox"><p>Turn this PDF into row-by-row steps with techniques.</p><button type="button" class="btn primary" id="readBtn">Read pattern</button></div>'
       : '<div class="readbox"><p>Add your Anthropic API key in Settings and Claude will turn this PDF into row-by-row steps.</p><button type="button" class="btn" id="goSettings">Open settings</button></div>';
   }
@@ -1383,7 +1395,9 @@ function openSettings() {
   $("apiKey").value = "";
   const k = getKey();
   $("keyNote").className = "hint";
-  $("keyNote").textContent = k ? "A key is saved on this device (ends in …" + k.slice(-4) + ")." : "No key saved yet.";
+  $("keyNote").textContent = serverKey()
+    ? "Pattern reading uses the key stored in Cloudflare, so this device doesn’t need its own." + (k ? " You can remove the key saved here." : "")
+    : k ? "A key is saved on this device (ends in …" + k.slice(-4) + ")." : "No key saved yet.";
   $("backupNote").textContent = "";
   renderSyncSettings();
   $("appVersion").textContent = "Version " + APP_VERSION;
@@ -1538,7 +1552,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-10-25.8";
+const APP_VERSION = "2026-10-25.9";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;

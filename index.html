@@ -705,7 +705,8 @@ button.item:active { transform: scale(0.99); }
 
     <div class="setgroup">
       <h2>Pattern reading</h2>
-      <p>When you add a PDF, Claude reads it and turns it into row-by-row steps with techniques. This uses your own Anthropic API key, which is saved only on this device and sent only to Anthropic. Each pattern costs roughly a few cents to read.</p>
+      <p>When you add a PDF, Claude reads it and turns it into row-by-row steps with techniques, using your Anthropic API key. Each pattern costs roughly a few cents to read.</p>
+      <p>Easiest: store the key once in Cloudflare as the secret <b>ANTHROPIC_API_KEY</b>, and every device with sync on can read patterns. Or save a key on this device below; it stays on this device and is sent only to Anthropic.</p>
       <p>Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</p>
       <label class="field" for="apiKey">Anthropic API key
         <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">

@@ -36,7 +36,11 @@ The sync API lives in `functions/api/[[path]].js`. The database table is created
 - **Android (Chrome):** open the site → menu → **Install app** (or **Add to Home screen**).
 
 ## Pattern reading
-Settings → paste an Anthropic API key from https://console.anthropic.com/settings/keys. The key is stored only on the device, and the app sends it only to Anthropic's API. Keep the app open while a pattern is being read; it usually takes a minute or two.
+Get an Anthropic API key from https://console.anthropic.com/settings/keys, then either:
+- **Recommended:** Pages project → **Settings → Variables and Secrets → Add**, type **Secret**, name `ANTHROPIC_API_KEY`, then redeploy. Every device with sync on can read patterns through `/api/claude`, and no device stores the key.
+- Or paste the key in the app's Settings on one device. It's stored only there and sent only to Anthropic.
+
+Keep the app open while a pattern is being read; it usually takes a minute or two.
 
 ## Files
 - `index.html`: markup and styles
