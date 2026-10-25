@@ -687,9 +687,9 @@ Never add rows the pattern doesn't contain, and don't skip any.`;
 const DIRECT_PDF_LIMIT = 23 * 1048576;
 const IMAGE_BUDGET = 27 * 1048576;
 
-async function patternContent(fileId, onStatus) {
+async function patternContent(fileId, onStatus, asImages) {
   const f = await getFile(fileId);
-  if (f.data.byteLength <= DIRECT_PDF_LIMIT) {
+  if (!asImages && f.data.byteLength <= DIRECT_PDF_LIMIT) {
     const data = await bufToB64(f.data);
     return [
       { type: "document", source: { type: "base64", media_type: "application/pdf", data } },
@@ -727,7 +727,7 @@ async function patternContent(fileId, onStatus) {
         if (total > IMAGE_BUDGET) break;
       }
       if (total <= IMAGE_BUDGET) {
-        blocks.push({ type: "text", text: "The pattern PDF was too large to attach, so each page is given as an image together with the text extracted from it. Use the text for exact wording and numbers, and the images for charts, schematics and layout. Turn this pattern into the row-by-row guide." });
+        blocks.push({ type: "text", text: "The pattern PDF is given as page images, each with the text extracted from that page. The pages may carry the knitter's own handwritten notes or highlights; treat those as part of the pattern when they change a number or instruction. Use the text for exact wording and numbers, and the images for charts, schematics and layout. Turn this pattern into the row-by-row guide." });
         return blocks;
       }
     }
@@ -749,9 +749,10 @@ async function readPattern(patId) {
   try {
     const { Anthropic } = await import("./vendor/anthropic-sdk.mjs");
     const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2 });
-    const content = await patternContent(pat.fileId, (msg) => { reading[patId].msg = msg; updateReadProgress(patId); });
-    reading[patId].msg = "Claude is reading the pattern…";
-    updateReadProgress(patId);
+    const onStatus = (msg) => { reading[patId].msg = msg; reading[patId].chars = 0; updateReadProgress(patId); };
+    let content = await patternContent(pat.fileId, onStatus, false);
+    const direct = content[0].type === "document";
+    onStatus("Claude is reading the pattern\u2026");
     const body = {
       model: "claude-opus-5-5",
       max_tokens: 64000,
@@ -769,12 +770,25 @@ async function readPattern(patId) {
       });
       return stream.finalMessage();
     };
+    const attempt = async () => {
+      try {
+        return await runStream({ ...body, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
+      } catch (e) {
+        // if the fallback option isn't accepted, retry once without it
+        if (e && e.status === 400 && /fallback/i.test(String(e.message))) { reading[patId].chars = 0; return runStream(body); }
+        throw e;
+      }
+    };
     try {
-      message = await runStream({ ...body, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
+      message = await attempt();
     } catch (e) {
-      // if the fallback option isn't accepted, retry once without it
-      if (e && e.status === 400 && /fallback/i.test(String(e.message))) { reading[patId].chars = 0; message = await runStream(body); }
-      else throw e;
+      // some PDFs (often ones edited in markup apps) are rejected as files; their pages still render fine as images
+      if (!direct || !e || (e.status !== 400 && e.status !== 413)) throw e;
+      onStatus("Claude couldn\u2019t open the PDF file itself, so the app is sending its pages as pictures instead\u2026");
+      content = await patternContent(pat.fileId, onStatus, true);
+      body.messages = [{ role: "user", content }];
+      onStatus("Claude is reading the pattern pages\u2026");
+      message = await attempt();
     }
     if (message.stop_reason === "refusal") throw new Error("Claude declined to read this pattern.");
     if (message.stop_reason === "max_tokens") throw new Error("This pattern is too long to read in one go.");
@@ -808,6 +822,7 @@ function explainError(e) {
   if (st === 403) return "Your API key doesn’t have permission to use this model.";
   if (st === 429) return "Too many requests right now. Wait a minute and try again.";
   if (st === 413) return "This pattern was too large to send to Claude in one request.";
+  if (st === 400) return "Claude couldn\u2019t read this file: " + ((e.error && e.error.error && e.error.error.message) || e.message || "bad request");
   if (st && st >= 500) return "Anthropic’s service had a problem. Try again in a moment.";
   if (e instanceof SyntaxError) return "Claude’s answer couldn’t be understood. Try reading the pattern again.";
   if (e && /fetch|network|Load failed/i.test(String(e.message))) return "Couldn’t reach Anthropic. Check your connection and keep the app open while it reads.";
@@ -900,7 +915,9 @@ $("finishProj").addEventListener("click", () => {
   save("projects", p);
   renderProjectInfo();
 });
-armed($("delProj"), () => { const p = cur(); if (!p) return; remove("projects", p.id); goHome("projects"); toast("Project deleted"); });
+const deleteCurrentProject = () => { const p = cur(); if (!p) return; remove("projects", p.id); goHome("projects"); toast("\u201c" + (p.name || "Project") + "\u201d deleted"); };
+armed($("delProj"), deleteCurrentProject);
+armed($("delProj2"), deleteCurrentProject);
 
 /* ---------------- tracker ---------------- */
 function renderTracker(animate) {
@@ -1348,6 +1365,7 @@ function openSettings() {
   $("keyNote").textContent = k ? "A key is saved on this device (ends in …" + k.slice(-4) + ")." : "No key saved yet.";
   $("backupNote").textContent = "";
   renderSyncSettings();
+  $("appVersion").textContent = "Version " + APP_VERSION;
   $("storageNote").textContent = "Checking storage…";
   if (navigator.storage && navigator.storage.estimate) {
     Promise.all([navigator.storage.estimate(), navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false)]).then(([est, persisted]) => {
@@ -1499,7 +1517,19 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+const APP_VERSION = "2026-10-25.5";
+if ("serviceWorker" in navigator) {
+  // when a new version takes over, reload once so it's used straight away (progress is already saved)
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (hadController && !reloading) { reloading = true; location.reload(); }
+  });
+  navigator.serviceWorker.register("sw.js").then((reg) => {
+    reg.update().catch(() => {});
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => {}); });
+  }).catch(() => {});
+}
 loadAll().then(() => {
   const last = lsGet("knit-last");
   if (last && S.projects[last]) openProject(last);

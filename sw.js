@@ -1,5 +1,5 @@
-// Offline support: serve the app from cache, refresh the cache in the background.
-const CACHE = "knit-v2";
+// Offline support: always try the network first so updates show up right away; use the cache when offline.
+const CACHE = "knit-v3";
 const SHELL = [
   "./",
   "index.html",
@@ -32,10 +32,19 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(req, { ignoreSearch: true });
-      const fresh = fetch(req)
-        .then((res) => { if (res.ok) cache.put(req, res.clone()); return res; })
-        .catch(() => cached);
-      return cached || fresh;
+      // with a saved copy to fall back on, don't wait long on a weak connection
+      const ctrl = new AbortController();
+      const timer = cached ? setTimeout(() => ctrl.abort(), 4000) : null;
+      try {
+        const res = await fetch(req, { cache: "no-cache", signal: ctrl.signal });
+        if (res.ok) cache.put(req, res.clone());
+        return res;
+      } catch (err) {
+        if (cached) return cached;
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
     })
   );
 });

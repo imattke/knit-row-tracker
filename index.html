@@ -380,7 +380,7 @@ button.item:active { transform: scale(0.99); }
   color: var(--muted);
   font-size: 0.9rem;
 }
-.toolbtns { display: flex; gap: 14px; }
+.toolbtns { display: flex; flex-wrap: wrap; gap: 0 14px; }
 
 .panel {
   margin: 16px 0 0;
@@ -632,7 +632,7 @@ button.item:active { transform: scale(0.99); }
       <section class="panel" id="place" hidden></section>
       <div class="tools">
         <span id="toolHint"></span>
-        <span class="toolbtns"><button type="button" class="linkbtn" id="setplace">Set my place</button><button type="button" class="linkbtn" id="reset">Start over</button></span>
+        <span class="toolbtns"><button type="button" class="linkbtn" id="setplace">Set my place</button><button type="button" class="linkbtn" id="reset">Start over</button><button type="button" class="linkbtn danger" id="delProj2">Delete project</button></span>
       </div>
     </div>
 
@@ -716,6 +716,7 @@ button.item:active { transform: scale(0.99); }
     <div class="setgroup">
       <h2>Storage</h2>
       <p id="storageNote">Checking storage…</p>
+      <p id="appVersion"></p>
     </div>
   </section>
 </main>
