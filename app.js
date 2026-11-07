@@ -517,6 +517,7 @@ $("vHome").addEventListener("click", (e) => {
 let sheetCfg = null;
 function openSheet(cfg) {
   sheetCfg = cfg;
+  $("toast").hidden = true;
   let h = "<h2>" + esc(cfg.title) + "</h2>";
   if (cfg.from) h += '<p class="from">' + esc(cfg.from) + "</p>";
   cfg.fields.forEach((f) => {
@@ -990,7 +991,10 @@ function renderTracker(animate) {
     } else {
       h += '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>";
     }
-    if (isLong) h += '<button type="button" class="linkbtn" id="rowView">' + (asList ? "Show as sentence" : "Show as checklist") + "</button>";
+    const tools = [];
+    if (isLong) tools.push('<button type="button" class="linkbtn" id="rowView">' + (asList ? "Show as sentence" : "Show as checklist") + "</button>");
+    if (pat.kind === "pdf") tools.push('<button type="button" class="linkbtn" id="rowEdit">Edit this row</button>');
+    if (tools.length) h += '<div class="rowtools">' + tools.join("") + "</div>";
     if (techs.length) h += '<div class="techs"><h3>Techniques for this row</h3>' + techs.map((t) => '<div class="tech"><b>' + esc(t.name || t.term) + "</b>" + esc(t.how) + "</div>").join("") + "</div>";
     // only needed once, when the piece is long enough, so it sits below the techniques
     if (s.repeat_type === "until") {
@@ -999,6 +1003,8 @@ function renderTracker(animate) {
     }
     card.className = "card guide";
     card.innerHTML = h;
+    const re = $("rowEdit");
+    if (re) re.addEventListener("click", () => editRowSheet(pat, pr.sec, pr.row, () => renderTracker(false)));
     const rv = $("rowView");
     if (rv) rv.addEventListener("click", () => { lsSet("knit-long-rows", asList ? "sentence" : "list"); renderTracker(false); });
     card.querySelectorAll(".chk").forEach((b) => b.addEventListener("click", () => {
@@ -1152,6 +1158,31 @@ $("setplace").addEventListener("click", () => {
   panel.scrollIntoView({ block: "nearest" });
 });
 
+/* fix a row Claude misread; the change is saved to the pattern, so every project using it sees it */
+function editRowSheet(pat, secIdx, rowIdx, after) {
+  const r = pat.guide && pat.guide.sections[secIdx] && pat.guide.sections[secIdx].rows[rowIdx];
+  if (!r) return;
+  openSheet({
+    title: "Edit this row",
+    from: pat.guide.sections[secIdx].title + " \u00b7 " + (r.label || "Row " + (rowIdx + 1)),
+    submit: "Save row",
+    fields: [
+      { name: "label", label: "Row name", value: r.label },
+      { name: "steps", label: "Instructions (one step per line)", type: "textarea", value: r.steps.join("\n") }
+    ],
+    onSubmit: (v) => {
+      const steps = v.steps.split("\n").map((t) => t.trim()).filter(Boolean);
+      if (!steps.length) throw new Error("Add at least one instruction.");
+      r.label = v.label || r.label;
+      r.steps = steps;
+      pat.editedAt = Date.now();
+      save("patterns", pat);
+      toast("Row saved");
+      after();
+    }
+  });
+}
+
 /* ============================================================
    Pattern screen
    ============================================================ */
@@ -1199,23 +1230,26 @@ function renderPatternBody() {
   $("app").classList.toggle("wide", showPdf);
   if (g && !showPdf) {
     let h = g.overview ? '<p class="overview">' + esc(g.overview) + "</p>" : "";
-    g.sections.forEach((s) => {
+    g.sections.forEach((s, si) => {
       h += '<div class="sec"><h3>' + esc(s.title) + "</h3>";
       const rt = repeatText(s);
       if (rt) h += '<p class="rpt">' + esc(rt) + "</p>";
-      s.rows.forEach((r) => {
-        h += '<div class="rowcard"><p class="patlabel">' + esc(r.label) + (r.side ? ' <span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + r.side + "</span>" : "") + '</p><p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p></div>";
+      s.rows.forEach((r, ri) => {
+        h += '<div class="rowcard"><p class="patlabel">' + esc(r.label) + (r.side ? ' <span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + r.side + "</span>" : "") + '</p><p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>" +
+          (hasPdf ? '<button type="button" class="linkbtn" data-edit-sec="' + si + '" data-edit-row="' + ri + '">Edit</button>' : "") + "</div>";
       });
       h += "</div>";
     });
     if (g.techniques && g.techniques.length) {
       h += '<div class="sec"><h3>Techniques</h3><div class="rowcard"><div class="techs" style="margin:0;padding:0;border:0">' + g.techniques.map((t) => '<div class="tech"><b>' + esc(t.name || t.term) + (t.name && t.term && t.name !== t.term ? " (" + esc(t.term) + ")" : "") + "</b>" + esc(t.how) + "</div>").join("") + "</div></div></div>";
     }
-    if (hasPdf) h += '<p class="hint" style="margin-top:18px">Steps look wrong? <button type="button" class="linkbtn" id="rereadBtn">Read the pattern again</button></p>';
+    if (hasPdf) h += '<p class="hint" style="margin-top:18px">A row looks wrong? Tap Edit under it. To start over, <button type="button" class="linkbtn" id="rereadBtn">read the whole pattern again</button>' + (pat.editedAt ? " (this replaces your edits)" : "") + ".</p>";
     $("patSteps").innerHTML = h;
     $("patSteps").hidden = false;
     const rr = $("rereadBtn");
     if (rr) armed(rr, () => readPattern(pat.id));
+    $("patSteps").querySelectorAll("[data-edit-row]").forEach((b) => b.addEventListener("click", () =>
+      editRowSheet(pat, +b.dataset.editSec, +b.dataset.editRow, () => renderPatternBody())));
   } else {
     $("patSteps").innerHTML = "";
     $("patSteps").hidden = true;
@@ -1552,7 +1586,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-10-25.9";
+const APP_VERSION = "2026-11-07.1";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;
