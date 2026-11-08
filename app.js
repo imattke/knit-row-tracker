@@ -335,6 +335,69 @@ function guideOf(pat) {
   if (pat.kind === "builtin") return BUILTIN_GUIDE;
   return pat.guideStatus === "ready" && pat.guide && pat.guide.sections && pat.guide.sections.length ? pat.guide : null;
 }
+/* Sizes. Claude writes every size-dependent value as {{v1|v2|v3}} (one value per size, in the
+   pattern's size order) and starts a step that applies to some sizes only with {{only:2,3}}.
+   Sections and rows can also be limited to some sizes, and a section's repeat count can differ by size. */
+const sizesOf = (g) => (g && Array.isArray(g.sizes) && g.sizes.length > 1 ? g.sizes : []);
+const ONLY_RE = /^\s*\{\{only:([\d,\s]+)\}\}\s*/;
+const sizeList = (str) => str.split(",").map((x) => parseInt(x, 10)).filter((x) => !isNaN(x));
+function hasSize(g, size) { return typeof size === "number" && size >= 0 && size < sizesOf(g).length; }
+
+// the pattern as it reads for one size: other sizes' sections, rows and steps removed, repeat counts for this size
+function sizedGuide(g, size) {
+  if (!g || !hasSize(g, size)) return g;
+  const n = sizesOf(g).length;
+  const keep = (arr) => !Array.isArray(arr) || !arr.length || arr.includes(size);
+  const sections = [];
+  g.sections.forEach((s, si) => {
+    if (!keep(s.only_sizes)) return;
+    let times = s.repeat_times;
+    if (Array.isArray(s.repeat_times_by_size) && s.repeat_times_by_size.length === n) times = s.repeat_times_by_size[size];
+    if (s.repeat_type === "times" && times === 0) return;
+    const rows = [];
+    s.rows.forEach((r, ri) => {
+      if (!keep(r.only_sizes)) return;
+      const steps = [];
+      r.steps.forEach((t) => {
+        const m = ONLY_RE.exec(t);
+        if (!m) steps.push(t);
+        else if (sizeList(m[1]).includes(size)) steps.push(t.slice(m[0].length));
+      });
+      if (steps.length) rows.push({ ...r, steps, _src: [si, ri] });
+    });
+    if (!rows.length) return;
+    sections.push({ ...s, repeat_type: s.repeat_type === "times" && !(times > 1) ? "once" : s.repeat_type, repeat_times: times, rows });
+  });
+  return sections.length ? { ...g, sections } : g;
+}
+function guideForProject(prj) {
+  const pat = prj && S.patterns[prj.patternId];
+  return sizedGuide(guideOf(pat), prj && prj.sizeIdx);
+}
+function sizeCtx(g, size) { const names = sizesOf(g); return names.length ? { names, size: hasSize(g, size) ? size : null } : null; }
+
+// turns size markers in already-escaped text into the chosen size's value, or every size's value
+function sizeMarkup(h, ctx) {
+  h = h.replace(/\{\{only:([\d,\s]+)\}\}\s*/g, (m, list) =>
+    ctx ? '<span class="szonly">' + esc(sizeList(list).map((i) => ctx.names[i] || "?").join(", ")) + " only:</span> " : "");
+  return h.replace(/\{\{([^{}]*)\}\}/g, (m, inner) => {
+    const vals = inner.split("|").map((v) => v.trim());
+    if (vals.length === 1) return vals[0];
+    if (ctx && ctx.size !== null && vals.length === ctx.names.length) return '<span class="sz">' + vals[ctx.size] + "</span>";
+    return '<span class="szall">' + vals.join(" / ") + "</span>";
+  });
+}
+const fmtText = (text, ctx) => sizeMarkup(esc(text), ctx);
+// for places that show plain text (button labels)
+function plainText(text, ctx) { const d = document.createElement("div"); d.innerHTML = fmtText(text, ctx); return d.textContent; }
+function countSizeIssues(g) {
+  const n = sizesOf(g).length;
+  let bad = 0;
+  const check = (t) => { (String(t || "").match(/\{\{(?!only:)[^{}]*\}\}/g) || []).forEach((m) => { const k = m.slice(2, -2).split("|").length; if (k > 1 && k !== n) bad++; }); };
+  g.sections.forEach((s) => { check(s.title); check(s.repeat_until); s.rows.forEach((r) => { check(r.label); r.steps.forEach(check); }); });
+  return bad;
+}
+
 function cleanPos(g, pr) {
   if (typeof pr.sec !== "number" || pr.sec < 0 || pr.sec >= g.sections.length) pr.sec = 0;
   const s = g.sections[pr.sec];
@@ -380,8 +443,8 @@ function guideBack(g, pr) {
 }
 function canBack(pr) { return pr.done || pr.row > 0 || pr.rep > 1 || pr.sec > 0; }
 
-function fmtStep(text, techniques) {
-  let h = esc(text);
+function fmtStep(text, techniques, ctx) {
+  let h = sizeMarkup(esc(text), ctx);
   h = h.replace(/\*(.+?)\*/g, '<span class="rep">$1</span>');
   const terms = (techniques || []).map((t) => t.term).filter((t) => t && t.length > 1).sort((a, b) => b.length - a.length);
   if (terms.length) {
@@ -395,10 +458,17 @@ function techsInRow(row, techniques) {
   return (techniques || []).filter((t) => t.term && new RegExp("(^|[^A-Za-z0-9])" + reRegex(t.term) + "(?![A-Za-z0-9])").test(text));
 }
 function sideLabel(side) { return side === "RS" ? "Right side" : side === "WS" ? "Wrong side" : ""; }
-function repeatText(s) {
-  if (s.repeat_type === "times" && s.repeat_times > 1) return "Work " + s.rows.length + (s.rows.length === 1 ? " row" : " rows") + " " + s.repeat_times + " times";
-  if (s.repeat_type === "until") return "Repeat until " + s.repeat_until.replace(/^until\s+/i, "");
+// html; by-size repeat counts show every size's count until a size is chosen
+function repeatText(s, ctx) {
+  const rows = s.rows.length + (s.rows.length === 1 ? " row" : " rows");
+  const bySize = Array.isArray(s.repeat_times_by_size) && ctx && s.repeat_times_by_size.length === ctx.names.length ? s.repeat_times_by_size : null;
+  if (bySize && ctx.size === null) return "Work " + rows + ' <span class="szall">' + bySize.join(" / ") + "</span> times";
+  if (s.repeat_type === "times" && s.repeat_times > 1) return "Work " + rows + " " + s.repeat_times + " times";
+  if (s.repeat_type === "until") return "Repeat until " + fmtText(s.repeat_until.replace(/^until\s+/i, ""), ctx);
   return "";
+}
+function onlyNote(arr, ctx) {
+  return ctx && Array.isArray(arr) && arr.length ? ' <span class="szonly">' + esc(arr.map((i) => ctx.names[i] || "?").join(", ")) + " only</span>" : "";
 }
 
 /* ============================================================
@@ -449,7 +519,7 @@ function patternStatus(p) {
   return { text: "PDF only", cls: "plain" };
 }
 function progressLabel(prj) {
-  const pat = S.patterns[prj.patternId], g = guideOf(pat), pr = prj.progress || {};
+  const g = guideForProject(prj), pr = prj.progress || {};
   if (g) {
     cleanPos(g, pr);
     if (pr.done) return "Pattern complete";
@@ -463,6 +533,8 @@ function patternMeta(p) {
   const n = usesOf(p.id);
   const bits = [p.kind === "builtin" ? "Built in" : "PDF" + (p.pages ? " · " + p.pages + (p.pages === 1 ? " page" : " pages") : "")];
   if (p.size) bits.push(fmtSize(p.size));
+  const sz = sizesOf(guideOf(p)).length;
+  if (sz) bits.push(sz + " sizes");
   bits.push(n ? n + (n === 1 ? " project" : " projects") : "no projects yet");
   return bits.join(" · ");
 }
@@ -523,7 +595,9 @@ function openSheet(cfg) {
   cfg.fields.forEach((f) => {
     const id = "f_" + f.name;
     h += '<label class="field" for="' + id + '">' + esc(f.label);
+    if (f.hint) h += ' <span class="sub">' + esc(f.hint) + "</span>";
     if (f.type === "textarea") h += '<textarea id="' + id + '" rows="4" placeholder="' + esc(f.placeholder || "") + '">' + esc(f.value || "") + "</textarea>";
+    else if (f.type === "select") h += '<select id="' + id + '">' + f.options.map((o) => '<option value="' + esc(o.value) + '"' + (String(o.value) === String(f.value == null ? "" : f.value) ? " selected" : "") + ">" + esc(o.label) + "</option>").join("") + "</select>";
     else h += '<input id="' + id + '" type="' + (f.type || "text") + '" value="' + esc(f.value || "") + '" placeholder="' + esc(f.placeholder || "") + '" autocomplete="off">';
     h += "</label>";
   });
@@ -553,25 +627,33 @@ $("sheet").addEventListener("submit", (e) => {
   } else closeSheet();
 });
 
-function detailFields(p) {
+function detailFields(p, sizes) {
+  const size = sizes && sizes.length ? [{
+    name: "size", label: "Size you\u2019re making", type: "select", value: typeof p.sizeIdx === "number" ? p.sizeIdx : "",
+    options: [{ value: "", label: "Choose a size" }].concat(sizes.map((n, i) => ({ value: i, label: n })))
+  }] : [];
   return [
-    { name: "name", label: "Project name", value: p.name },
+    { name: "name", label: "Project name", value: p.name }
+  ].concat(size, [
     { name: "started", label: "Started", type: "date", value: p.started },
     { name: "yarn", label: "Yarn", value: p.yarn, placeholder: "e.g. Drops Alpaca, 3 skeins, colour 6834" },
     { name: "gauge", label: "Gauge", value: p.gauge, placeholder: "e.g. 22 sts × 30 rows = 10 cm on 4 mm" },
     { name: "notes", label: "Notes", type: "textarea", value: p.notes, placeholder: "Needles, the size you’re making, changes to the pattern…" }
-  ];
+  ]);
 }
 function startProjectSheet(patId) {
   const pat = S.patterns[patId];
   if (!pat) return;
   openSheet({
     title: "Start a project", from: "Pattern: " + pat.name, submit: "Add to projects",
-    fields: detailFields({ name: pat.name, started: today() }),
+    fields: detailFields({ name: pat.name, started: today() }, sizesOf(guideOf(pat))),
     onSubmit: (v) => {
       if (!v.name) throw new Error("Give the project a name.");
+      const sizes = sizesOf(guideOf(pat));
+      if (sizes.length && v.size === "") throw new Error("Choose the size you\u2019re making.");
       save("projects", {
         id: newId("prj-"), name: v.name, patternId: patId, started: v.started || today(),
+        sizeIdx: sizes.length ? Number(v.size) : null,
         yarn: v.yarn, gauge: v.gauge, notes: v.notes, status: "active",
         progress: { sec: 0, row: 0, rep: 1, count: 0 }, repeatLen: 0, page: 1, zoom: 1, createdAt: Date.now()
       });
@@ -632,30 +714,34 @@ const reading = {};
 const GUIDE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["title", "overview", "sections", "techniques"],
+  required: ["title", "overview", "sizes", "sections", "techniques"],
   properties: {
     title: { type: "string" },
+    sizes: { type: "array", items: { type: "string" } },
     overview: { type: "string" },
     sections: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["title", "repeat_type", "repeat_times", "repeat_until", "rows"],
+        required: ["title", "repeat_type", "repeat_times", "repeat_times_by_size", "repeat_until", "only_sizes", "rows"],
         properties: {
           title: { type: "string" },
           repeat_type: { type: "string", enum: ["once", "times", "until"] },
           repeat_times: { type: "integer" },
+          repeat_times_by_size: { type: "array", items: { type: "integer" } },
           repeat_until: { type: "string" },
+          only_sizes: { type: "array", items: { type: "integer" } },
           rows: {
             type: "array",
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["label", "side", "steps"],
+              required: ["label", "side", "only_sizes", "steps"],
               properties: {
                 label: { type: "string" },
                 side: { type: "string", enum: ["RS", "WS", ""] },
+                only_sizes: { type: "array", items: { type: "integer" } },
                 steps: { type: "array", items: { type: "string" } }
               }
             }
@@ -684,7 +770,8 @@ How to structure it:
 - label: the pattern's own name for the row ("Row 5", "Rnd 12", "Set-up row", "Cast on"), so the knitter can find it in the PDF.
 - side: "RS" or "WS" when knitting flat and the side is known; "" for rounds or when unknown.
 - steps: the row split into short, ordered instructions in plain English. Spell out common abbreviations (k2tog becomes "knit 2 together"), but keep the pattern's abbreviation for special techniques (such as "m1L", "ssk", "kfb", "sl1 wyif") so each can link to its explanation. Wrap a repeated stitch sequence in asterisks, like "Work *knit 1, purl 1* until 2 stitches remain." Include stitch counts the pattern gives at the end of a row.
-- Sizes: if the pattern has several sizes, keep every size's number exactly as written, for example "Cast on 96 (104, 112) stitches."
+- Sizes: if the pattern is written for more than one size, list the size names in sizes in the pattern's own order, for example ["S", "M", "L", "XL"] or ["XS", "S", "M", "L", "XL", "2XL"]; otherwise sizes is []. Patterns write size-dependent numbers in that same order using conventions such as "S(M)L(XL)" with "100(120)150(170) sts", "100 (120, 150, 170)", "100 [120: 150: 170]" or "100-120-150-170". Every number or measurement that differs by size must be written as {{v1|v2|...}} with exactly one value per size, in size order, for example "Cast on {{100|120|150|170}} stitches." or "until the piece measures {{30|32|34|36}} cm from cast-on". Keep units and words outside the braces. Count the values against the size list every time; the groups in the pattern are positional, so the third value always belongs to the third size. When the pattern gives one number for some sizes and separate numbers for others (for example "all sizes: 4" or "0(0)2(2)"), still write one value per size. When a value is the same for every size, write it plainly with no braces. Use the same notation in row labels, section titles and repeat_until.
+- Size-specific parts: when a whole section or row applies only to some sizes ("Sizes L and XL only"), list those sizes' positions (0 for the first size) in its only_sizes; otherwise only_sizes is []. When a single step applies only to some sizes, start it with {{only:2,3}} (positions, 0 for the first size), for example "{{only:2,3}}Knit 2 together." When a section is repeated a different number of times per size, put one count per size in repeat_times_by_size (in size order; 0 for a size that skips it) and the first size's count in repeat_times; otherwise repeat_times_by_size is [].
 - Charts: transcribe chart rows into steps when you can read them; otherwise write one step such as "Work row 3 of Chart A."
 - techniques: every special stitch, abbreviation or method the steps use. term is the exact text used in the steps, name is its full name, and how is a short explanation of how to work it, taken from the pattern's glossary when it has one.
 - overview: a few short lines covering yarn, needles, gauge and sizes as the pattern states them.
@@ -806,10 +893,20 @@ async function readPattern(patId) {
     const guide = JSON.parse(text);
     guide.sections = (guide.sections || []).filter((s) => s.rows && s.rows.length);
     if (!guide.sections.length) throw new Error("Claude couldn’t find any rows in this PDF.");
+    guide.sizes = Array.isArray(guide.sizes) && guide.sizes.length > 1 ? guide.sizes.map(String) : [];
+    const nSizes = guide.sizes.length;
+    const okSizes = (arr) => (Array.isArray(arr) ? arr.filter((i) => Number.isInteger(i) && i >= 0 && i < nSizes) : []);
     guide.sections.forEach((s) => {
-      if (s.repeat_type === "times" && !(s.repeat_times > 1)) s.repeat_type = "once";
-      s.rows.forEach((r) => { if (!r.steps || !r.steps.length) r.steps = [r.label || "Work this row."]; });
+      s.only_sizes = okSizes(s.only_sizes);
+      s.repeat_times_by_size = Array.isArray(s.repeat_times_by_size) && s.repeat_times_by_size.length === nSizes && nSizes ? s.repeat_times_by_size : [];
+      if (s.repeat_type === "times" && !(s.repeat_times > 1) && !s.repeat_times_by_size.some((t) => t > 1)) s.repeat_type = "once";
+      s.rows.forEach((r) => {
+        r.only_sizes = okSizes(r.only_sizes);
+        if (!r.steps || !r.steps.length) r.steps = [r.label || "Work this row."];
+      });
     });
+    // size groups that don't have one value per size can't be split; they show every value instead
+    guide.sizeIssues = nSizes ? countSizeIssues(guide) : 0;
     pat.guide = guide;
     pat.guideStatus = "ready";
     pat.readAt = Date.now();
@@ -901,11 +998,12 @@ $("tabPdf").addEventListener("click", () => { view.sub = "pdf"; lsSet("knit-sub-
 function renderProjectInfo() {
   const p = cur(), pat = curPattern();
   $("projName").textContent = p.name || "Untitled project";
-  $("projMeta").textContent = (pat ? pat.name : "Pattern removed") + (p.started ? " · started " + fmtDate(p.started) : "") + (p.status === "finished" ? " · finished" : "");
+  const sizes = sizesOf(guideOf(pat)), sizeName = sizes.length && typeof p.sizeIdx === "number" ? sizes[p.sizeIdx] : "";
+  $("projMeta").textContent = (pat ? pat.name : "Pattern removed") + (sizeName ? " · size " + sizeName : "") + (p.started ? " · started " + fmtDate(p.started) : "") + (p.status === "finished" ? " · finished" : "");
   const bits = [p.yarn, p.gauge].filter(Boolean);
   $("detailSum").textContent = bits.length ? bits.join(" · ") : "Yarn, gauge, notes";
   const dd = (label, v) => "<dt>" + label + "</dt>" + (v ? "<dd>" + esc(v) + "</dd>" : '<dd class="none">Not added</dd>');
-  $("detailList").innerHTML = dd("Yarn", p.yarn) + dd("Gauge", p.gauge) + dd("Notes", p.notes) + dd("Started", fmtDate(p.started));
+  $("detailList").innerHTML = (sizes.length ? dd("Size", sizeName) : "") + dd("Yarn", p.yarn) + dd("Gauge", p.gauge) + dd("Notes", p.notes) + dd("Started", fmtDate(p.started));
   $("finishProj").textContent = p.status === "finished" ? "Mark as in progress" : "Mark finished";
 }
 
@@ -913,12 +1011,16 @@ $("projBack").addEventListener("click", () => goHome("projects"));
 $("editProj").addEventListener("click", () => {
   const p = cur(); if (!p) return;
   openSheet({
-    title: "Edit details", submit: "Save changes", fields: detailFields(p),
+    title: "Edit details", submit: "Save changes", fields: detailFields(p, sizesOf(guideOf(curPattern()))),
     onSubmit: (v) => {
       if (!v.name) throw new Error("Give the project a name.");
       Object.assign(p, { name: v.name, started: v.started, yarn: v.yarn, gauge: v.gauge, notes: v.notes });
+      const newSize = v.size === undefined || v.size === "" ? p.sizeIdx : Number(v.size);
+      const sizeChanged = sizesOf(guideOf(curPattern())).length && newSize !== p.sizeIdx;
+      if (sizeChanged) { p.sizeIdx = newSize; p.progress.ticks = null; }
       save("projects", p);
       renderProjectInfo();
+      if (sizeChanged) { renderTracker(true); toast("Size changed. Check your place with Set my place."); }
     }
   });
 });
@@ -935,7 +1037,8 @@ armed($("delProj2"), deleteCurrentProject);
 /* ---------------- tracker ---------------- */
 function renderTracker(animate) {
   const p = cur(); if (!p) return;
-  const pat = curPattern(), g = guideOf(pat);
+  const pat = curPattern(), g = guideForProject(p);
+  const ctx = g ? sizeCtx(g, p.sizeIdx) : null;
   const pr = p.progress || (p.progress = {});
   const card = $("card");
   let strip = "";
@@ -948,7 +1051,7 @@ function renderTracker(animate) {
     const T = s.repeat_type === "times" ? timesOf(s) : 0;
     const multi = g.sections.length > 1;
     $("secline").hidden = !multi;
-    if (multi) $("secline").innerHTML = "Section " + (pr.sec + 1) + " of " + g.sections.length + ": <strong>" + esc(s.title) + "</strong>";
+    if (multi) $("secline").innerHTML = "Section " + (pr.sec + 1) + " of " + g.sections.length + ": <strong>" + fmtText(s.title, ctx) + "</strong>";
     $("tally").innerHTML = "Row <strong>" + overallRow(g, pr) + "</strong> overall";
 
     if (pr.done) {
@@ -971,7 +1074,7 @@ function renderTracker(animate) {
     let big, label;
     if (oneRow) {
       big = pr.rep;
-      label = T ? "of " + T + (multi ? "" : " rows") : "rows so far";
+      label = T ? "of " + T + (multi ? "" : " rows") : pr.rep === 1 ? "row so far" : "rows so far";
     } else {
       big = pr.row + 1;
       label = "of " + N + (T > 1 ? " · repeat " + pr.rep + " of " + T : s.repeat_type === "until" ? " · repeat " + pr.rep : "");
@@ -980,16 +1083,17 @@ function renderTracker(animate) {
     const techs = techsInRow(r, g.techniques);
     let h = '<div class="rowhead"><div class="rownum">' + big + '</div><div class="rowmeta"><span class="rowlabel">' + esc(label) + "</span>" +
       (side ? '<span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + side + "</span>" : "") + "</div></div>";
-    if (r.label && pat.kind !== "builtin") h += '<p class="patlabel">' + esc(r.label) + "</p>";
+    if (ctx && ctx.size === null) h += '<div class="sizenote">This pattern comes in ' + ctx.names.length + ' sizes. Choose yours under <b>Details \u2192 Edit details</b> to see only your numbers.</div>';
+    if (r.label && pat.kind !== "builtin") h += '<p class="patlabel">' + fmtText(r.label, ctx) + "</p>";
     // long rows (sweater yokes, shaping) can switch to a tick-off checklist; ticks belong to this exact row and repeat
     const posKey = pr.sec + ":" + pr.row + ":" + pr.rep;
     const isLong = r.steps.length >= 8 || r.steps.join(" ").length > 350;
     const asList = isLong && lsGet("knit-long-rows") === "list";
     if (asList) {
       const ticks = pr.ticks && pr.ticks.key === posKey ? pr.ticks.on : [];
-      h += '<ul class="checklist">' + r.steps.map((t, i) => '<li><button type="button" class="chk' + (ticks.includes(i) ? " on" : "") + '" data-step="' + i + '" aria-pressed="' + ticks.includes(i) + '"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg></span><span class="txt">' + fmtStep(t, g.techniques) + "</span></button></li>").join("") + "</ul>";
+      h += '<ul class="checklist">' + r.steps.map((t, i) => '<li><button type="button" class="chk' + (ticks.includes(i) ? " on" : "") + '" data-step="' + i + '" aria-pressed="' + ticks.includes(i) + '"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg></span><span class="txt">' + fmtStep(t, g.techniques, ctx) + "</span></button></li>").join("") + "</ul>";
     } else {
-      h += '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>";
+      h += '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques, ctx)).join(" ") + "</p>";
     }
     const tools = [];
     if (isLong) tools.push('<button type="button" class="linkbtn" id="rowView">' + (asList ? "Show as sentence" : "Show as checklist") + "</button>");
@@ -998,13 +1102,14 @@ function renderTracker(animate) {
     if (techs.length) h += '<div class="techs"><h3>Techniques for this row</h3>' + techs.map((t) => '<div class="tech"><b>' + esc(t.name || t.term) + "</b>" + esc(t.how) + "</div>").join("") + "</div>";
     // only needed once, when the piece is long enough, so it sits below the techniques
     if (s.repeat_type === "until") {
-      h += '<div class="repeatend"><div class="until">Repeat until <strong>' + esc(s.repeat_until.replace(/^until\s+/i, "")) + "</strong>.</div>" +
-        '<button type="button" class="btn block moveon" id="moveOn">' + (pr.sec < g.sections.length - 1 ? "Done repeating: go to " + esc(g.sections[pr.sec + 1].title) : "Done repeating: finish the pattern") + "</button></div>";
+      h += '<div class="repeatend"><div class="until">Repeat until <strong>' + fmtText(s.repeat_until.replace(/^until\s+/i, ""), ctx) + "</strong>.</div>" +
+        '<button type="button" class="btn block moveon" id="moveOn">' + (pr.sec < g.sections.length - 1 ? "Done repeating: go to " + fmtText(g.sections[pr.sec + 1].title, ctx) : "Done repeating: finish the pattern") + "</button></div>";
     }
     card.className = "card guide";
     card.innerHTML = h;
     const re = $("rowEdit");
-    if (re) re.addEventListener("click", () => editRowSheet(pat, pr.sec, pr.row, () => renderTracker(false)));
+    const src = r._src || [pr.sec, pr.row];
+    if (re) re.addEventListener("click", () => editRowSheet(pat, src[0], src[1], () => renderTracker(false)));
     const rv = $("rowView");
     if (rv) rv.addEventListener("click", () => { lsSet("knit-long-rows", asList ? "sentence" : "list"); renderTracker(false); });
     card.querySelectorAll(".chk").forEach((b) => b.addEventListener("click", () => {
@@ -1031,12 +1136,12 @@ function renderTracker(animate) {
     if (peek.done) next = "This is the last row of the pattern.";
     else {
       const ns = g.sections[peek.sec], nr = ns.rows[peek.row];
-      const where = peek.sec !== pr.sec ? ", which starts <strong>" + esc(ns.title) + "</strong>" : peek.rep !== pr.rep && !oneRow ? ", which starts repeat " + peek.rep : "";
-      next = "Up next: <strong>" + esc(nr.label || "Row " + (peek.row + 1)) + (nr.side ? " (" + nr.side + ")" : "") + "</strong>" + where;
+      const where = peek.sec !== pr.sec ? ", which starts <strong>" + fmtText(ns.title, ctx) + "</strong>" : peek.rep !== pr.rep && !oneRow ? ", which starts repeat " + peek.rep : "";
+      next = "Up next: <strong>" + fmtText(nr.label || "Row " + (peek.row + 1), ctx) + (nr.side ? " (" + nr.side + ")" : "") + "</strong>" + where;
     }
     $("next").innerHTML = next;
     $("back").disabled = !canBack(pr);
-    $("doneLabel").textContent = (oneRow ? "Row " + pr.rep : r.label && pat.kind !== "builtin" ? r.label : "Row " + (pr.row + 1)) + " finished";
+    $("doneLabel").textContent = (oneRow ? "Row " + pr.rep : r.label && pat.kind !== "builtin" ? plainText(r.label, ctx) : "Row " + (pr.row + 1)) + " finished";
     $("toolHint").textContent = "Tap the button when the row is finished.";
   } else {
     // PDF without steps: a plain row counter with an optional repeat
@@ -1080,14 +1185,14 @@ function renderTracker(animate) {
 }
 
 function advance() {
-  const p = cur(), g = guideOf(curPattern()), pr = p.progress;
+  const p = cur(), g = guideForProject(p), pr = p.progress;
   pr.ticks = null;
   if (g) guideAdvance(g, pr); else pr.count = (pr.count || 0) + 1;
   save("projects", p);
   renderTracker(true);
 }
 function goBack() {
-  const p = cur(), g = guideOf(curPattern()), pr = p.progress;
+  const p = cur(), g = guideForProject(p), pr = p.progress;
   if (g) { if (!guideBack(g, pr)) return; } else { if (!pr.count) return; pr.count--; }
   save("projects", p);
   renderTracker(true);
@@ -1115,12 +1220,12 @@ armed($("reset"), () => {
 $("setplace").addEventListener("click", () => {
   const p = cur(), panel = $("place");
   if (!panel.hidden) { panel.hidden = true; return; }
-  const g = guideOf(curPattern()), pr = p.progress;
+  const g = guideForProject(p), pr = p.progress;
   let h = "<h2>Set my place</h2><div class=\"fields\">";
   if (g) {
     if (g.sections.length > 1) {
       h += '<label class="field" for="plSec" style="flex-basis:100%">Section<select id="plSec">' +
-        g.sections.map((s, i) => '<option value="' + i + '"' + (i === pr.sec ? " selected" : "") + ">" + (i + 1) + ". " + esc(s.title) + "</option>").join("") + "</select></label>";
+        g.sections.map((s, i) => '<option value="' + i + '"' + (i === pr.sec ? " selected" : "") + ">" + (i + 1) + ". " + esc(plainText(s.title, sizeCtx(g, p.sizeIdx))) + "</option>").join("") + "</select></label>";
     }
     h += '<label class="field" for="plRow">Row<select id="plRow"></select></label>' +
       '<label class="field" for="plRep">Repeat number<input id="plRep" type="number" inputmode="numeric" min="1" value="' + pr.rep + '"></label>';
@@ -1133,7 +1238,7 @@ $("setplace").addEventListener("click", () => {
   panel.hidden = false;
   const fillRows = () => {
     const si = $("plSec") ? +$("plSec").value : 0;
-    $("plRow").innerHTML = g.sections[si].rows.map((r, i) => '<option value="' + i + '"' + (si === pr.sec && i === pr.row ? " selected" : "") + ">" + esc(r.label || "Row " + (i + 1)) + (r.side ? " (" + r.side + ")" : "") + "</option>").join("");
+    $("plRow").innerHTML = g.sections[si].rows.map((r, i) => '<option value="' + i + '"' + (si === pr.sec && i === pr.row ? " selected" : "") + ">" + esc(plainText(r.label || "Row " + (i + 1), sizeCtx(g, p.sizeIdx))) + (r.side ? " (" + r.side + ")" : "") + "</option>").join("");
   };
   if (g) { fillRows(); if ($("plSec")) $("plSec").addEventListener("change", fillRows); }
   $("plCancel").addEventListener("click", () => { panel.hidden = true; });
@@ -1168,7 +1273,8 @@ function editRowSheet(pat, secIdx, rowIdx, after) {
     submit: "Save row",
     fields: [
       { name: "label", label: "Row name", value: r.label },
-      { name: "steps", label: "Instructions (one step per line)", type: "textarea", value: r.steps.join("\n") }
+      { name: "steps", label: "Instructions (one step per line)", type: "textarea", value: r.steps.join("\n"),
+        hint: sizesOf(pat.guide).length ? "Numbers that change by size look like {{100|120|150}}, one value per size in this order: " + sizesOf(pat.guide).join(" | ") + "." : "" }
     ],
     onSubmit: (v) => {
       const steps = v.steps.split("\n").map((t) => t.trim()).filter(Boolean);
@@ -1189,7 +1295,7 @@ function editRowSheet(pat, secIdx, rowIdx, after) {
 function openPattern(id) {
   if (!S.patterns[id]) return;
   destroyViewers();
-  view.name = "pattern"; view.id = id; view.sub = "steps";
+  view.name = "pattern"; view.id = id; view.sub = "steps"; view.patSize = null;
   show("pattern");
   renderPatternInfo();
   renderPatternBody();
@@ -1229,14 +1335,28 @@ function renderPatternBody() {
   const showPdf = hasPdf && view.sub === "pdf";
   $("app").classList.toggle("wide", showPdf);
   if (g && !showPdf) {
-    let h = g.overview ? '<p class="overview">' + esc(g.overview) + "</p>" : "";
-    g.sections.forEach((s, si) => {
-      h += '<div class="sec"><h3>' + esc(s.title) + "</h3>";
-      const rt = repeatText(s);
-      if (rt) h += '<p class="rpt">' + esc(rt) + "</p>";
+    const sizes = sizesOf(g);
+    if (!hasSize(g, view.patSize)) view.patSize = null;
+    const ctx = sizeCtx(g, view.patSize);
+    const shown = sizedGuide(g, view.patSize);
+    let h = "";
+    if (sizes.length) {
+      h += '<label class="field sizepick" for="patSizeSel">Show size<select id="patSizeSel"><option value="">All sizes (' + esc(sizes.join(", ")) + ")</option>" +
+        sizes.map((n, i) => '<option value="' + i + '"' + (view.patSize === i ? " selected" : "") + ">" + esc(n) + "</option>").join("") + "</select></label>";
+      if (g.sizeIssues) h += '<p class="hint warn">' + g.sizeIssues + (g.sizeIssues === 1 ? " number doesn\u2019t" : " numbers don\u2019t") + " have one value per size, so " + (g.sizeIssues === 1 ? "it shows" : "they show") + " every value. Check " + (g.sizeIssues === 1 ? "it" : "them") + " against the PDF and fix with Edit.</p>";
+    } else if (hasPdf && !Array.isArray(g.sizes)) {
+      h += '<p class="hint">If this pattern comes in several sizes, read it again (link at the bottom) to choose a size for each project.</p>';
+    }
+    if (g.overview) h += '<p class="overview">' + fmtText(g.overview, ctx) + "</p>";
+    shown.sections.forEach((s, si) => {
+      h += '<div class="sec"><h3>' + fmtText(s.title, ctx) + (view.patSize === null ? onlyNote(s.only_sizes, ctx) : "") + "</h3>";
+      const rt = repeatText(s, ctx);
+      if (rt) h += '<p class="rpt">' + rt + "</p>";
       s.rows.forEach((r, ri) => {
-        h += '<div class="rowcard"><p class="patlabel">' + esc(r.label) + (r.side ? ' <span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + r.side + "</span>" : "") + '</p><p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques)).join(" ") + "</p>" +
-          (hasPdf ? '<button type="button" class="linkbtn" data-edit-sec="' + si + '" data-edit-row="' + ri + '">Edit</button>' : "") + "</div>";
+        const src = r._src || [si, ri];
+        h += '<div class="rowcard"><p class="patlabel">' + fmtText(r.label, ctx) + (r.side ? ' <span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + r.side + "</span>" : "") + (view.patSize === null ? onlyNote(r.only_sizes, ctx) : "") +
+          '</p><p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques, ctx)).join(" ") + "</p>" +
+          (hasPdf ? '<button type="button" class="linkbtn" data-edit-sec="' + src[0] + '" data-edit-row="' + src[1] + '">Edit</button>' : "") + "</div>";
       });
       h += "</div>";
     });
@@ -1248,6 +1368,8 @@ function renderPatternBody() {
     $("patSteps").hidden = false;
     const rr = $("rereadBtn");
     if (rr) armed(rr, () => readPattern(pat.id));
+    const sel = $("patSizeSel");
+    if (sel) sel.addEventListener("change", () => { view.patSize = sel.value === "" ? null : Number(sel.value); renderPatternBody(); });
     $("patSteps").querySelectorAll("[data-edit-row]").forEach((b) => b.addEventListener("click", () =>
       editRowSheet(pat, +b.dataset.editSec, +b.dataset.editRow, () => renderPatternBody())));
   } else {
@@ -1586,7 +1708,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-11-07.1";
+const APP_VERSION = "2026-11-08.1";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;
