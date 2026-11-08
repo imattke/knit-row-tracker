@@ -398,6 +398,51 @@ function countSizeIssues(g) {
   return bad;
 }
 
+/* Checking Claude's rows against the PDF. Each row carries `source`, Claude's copy of the pattern's own wording.
+   A row is flagged when that quote can't be found in the PDF's text, or when its steps use a number the quote doesn't contain. */
+const squash = (t) => String(t || "").toLowerCase().replace(/[\u2018\u2019']/g, "").replace(/[^a-z0-9\u00bc-\u00be]+/g, "");
+const numbersIn = (t) => String(t || "").replace(/\{\{only:[^}]*\}\}/g, "").replace(/[{}|]/g, " ").match(/\d+(?:[.,]\d+)?|[\u00bc-\u00be]/g) || [];
+function quoteInPdf(source, pdfText) {
+  const q = squash(source);
+  if (!pdfText || q.length < 4) return null;
+  if (pdfText.includes(q)) return true;
+  // PDF text can come out with words split or reordered across lines, so accept a quote whose pieces are nearly all present
+  const size = 20, pieces = [];
+  for (let i = 0; i < q.length; i += size) pieces.push(q.slice(i, i + size));
+  const found = pieces.filter((p) => p.length < 6 || pdfText.includes(p)).length;
+  return found / pieces.length >= 0.8;
+}
+function checkRow(r, pdfText) {
+  if (!r.source || !r.source.trim()) return null;
+  const allowed = new Set(numbersIn(r.source).concat(numbersIn(r.label)));
+  const extra = [...new Set(r.steps.flatMap(numbersIn).filter((n) => !allowed.has(n)))];
+  return { quote: quoteInPdf(r.source, pdfText), extra };
+}
+const rowFlagged = (r) => !!(r.check && !r.check.ok && (r.check.quote === false || (r.check.extra && r.check.extra.length)));
+function flaggedCount(g) { let n = 0; g.sections.forEach((s) => s.rows.forEach((r) => { if (rowFlagged(r)) n++; })); return n; }
+// html for a row that needs a second look, or for showing the pattern's wording on request
+function sourceBox(r, flagged, ctxIds) {
+  let h = '<div class="' + (flagged ? "checkrow" : "srcrow") + '">';
+  if (flagged) {
+    h += "<b>Double-check this row against the pattern.</b>";
+    if (r.check.extra && r.check.extra.length) h += "<span>The steps use " + r.check.extra.map((n) => "<strong>" + esc(n) + "</strong>").join(", ") + ", which " + (r.check.extra.length === 1 ? "isn\u2019t" : "aren\u2019t") + " in the pattern\u2019s wording below.</span>";
+    if (r.check.quote === false) h += "<span>The wording below couldn\u2019t be found in the PDF, so Claude may have misread it.</span>";
+  }
+  h += '<span class="srcq">Pattern says: \u201c' + esc(r.source) + "\u201d</span>";
+  if (flagged && ctxIds) h += '<span class="checkacts"><button type="button" class="linkbtn" data-ok-sec="' + ctxIds[0] + '" data-ok-row="' + ctxIds[1] + '">It\u2019s right</button><button type="button" class="linkbtn" data-fix-sec="' + ctxIds[0] + '" data-fix-row="' + ctxIds[1] + '">Fix it</button></span>';
+  return h + "</div>";
+}
+async function pdfTextFor(fileId) {
+  try {
+    const f = await getFile(fileId);
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(f.data.slice(0)), isEvalSupported: false }).promise;
+    let out = "";
+    for (let i = 1; i <= doc.numPages; i++) out += (await (await doc.getPage(i)).getTextContent()).items.map((it) => it.str || "").join(" ") + " ";
+    doc.destroy();
+    return squash(out);
+  } catch (e) { return ""; }
+}
+
 function cleanPos(g, pr) {
   if (typeof pr.sec !== "number" || pr.sec < 0 || pr.sec >= g.sections.length) pr.sec = 0;
   const s = g.sections[pr.sec];
@@ -737,9 +782,10 @@ const GUIDE_SCHEMA = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["label", "side", "only_sizes", "steps"],
+              required: ["label", "side", "only_sizes", "source", "steps"],
               properties: {
                 label: { type: "string" },
+                source: { type: "string" },
                 side: { type: "string", enum: ["RS", "WS", ""] },
                 only_sizes: { type: "array", items: { type: "integer" } },
                 steps: { type: "array", items: { type: "string" } }
@@ -767,6 +813,8 @@ How to structure it:
 - sections: the pattern's parts in order (cast on, set-up, body, shaping, edging, finishing, and so on). Use the pattern's own section names.
 - rows: one entry per row or round the knitter works. A step that covers many rows without row-by-row instructions, such as "Work in pattern until the piece measures 30 cm from cast-on", is a single entry. Cast-on, bind-off, picking up stitches and finishing steps are entries too.
 - Repeats: when the pattern says to repeat a group of rows a set number of times, put that group in its own section with repeat_type "times" and repeat_times as the total number of times it is worked. When it says to repeat until a length or other condition, use repeat_type "until" and copy the condition into repeat_until (for example "the piece measures 40 cm from cast-on"). Runs of identical rows ("Rows 2-10: knit") become a one-row section repeated that many times. Otherwise use repeat_type "once", repeat_times 1 and repeat_until "".
+- source: the pattern's own wording for this row, copied character for character from the PDF (abbreviations, punctuation and every size's numbers unchanged). For an entry built from a sentence, such as a cast-on or a "continue until" instruction, copy that sentence. Never correct, expand or reword it: the app checks your steps against it.
+- Every number in steps must come from the row's source. Before writing each row, compare every stitch count in your steps with the source ("k2, skp" must become "Knit 2, skp", never "Knit 3, skp").
 - label: the pattern's own name for the row ("Row 5", "Rnd 12", "Set-up row", "Cast on"), so the knitter can find it in the PDF.
 - side: "RS" or "WS" when knitting flat and the side is known; "" for rounds or when unknown.
 - steps: the row split into short, ordered instructions in plain English. Spell out common abbreviations (k2tog becomes "knit 2 together"), but keep the pattern's abbreviation for special techniques (such as "m1L", "ssk", "kfb", "sl1 wyif") so each can link to its explanation. Wrap a repeated stitch sequence in asterisks, like "Work *knit 1, purl 1* until 2 stitches remain." Include stitch counts the pattern gives at the end of a row.
@@ -911,6 +959,8 @@ async function readPattern(patId) {
     });
     // size groups that don't have one value per size can't be split; they show every value instead
     guide.sizeIssues = nSizes ? countSizeIssues(guide) : 0;
+    const pdfText = await pdfTextFor(pat.fileId);
+    guide.sections.forEach((s) => s.rows.forEach((r) => { r.check = checkRow(r, pdfText); }));
     pat.guide = guide;
     pat.guideStatus = "ready";
     pat.readAt = Date.now();
@@ -1099,7 +1149,11 @@ function renderTracker(animate) {
     } else {
       h += '<p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques, ctx)).join(" ") + "</p>";
     }
+    const flagged = rowFlagged(r);
+    const showSrc = flagged || (r.source && lsGet("knit-show-source") === "1");
+    if (r.source && showSrc) h += sourceBox(r, flagged, r._src || [pr.sec, pr.row]);
     const tools = [];
+    if (r.source && !flagged) tools.push('<button type="button" class="linkbtn" id="srcToggle">' + (showSrc ? "Hide pattern wording" : "Show pattern wording") + "</button>");
     if (isLong) tools.push('<button type="button" class="linkbtn" id="rowView">' + (asList ? "Show as sentence" : "Show as checklist") + "</button>");
     if (pat.kind === "pdf") tools.push('<button type="button" class="linkbtn" id="rowEdit">Edit this row</button>');
     if (tools.length) h += '<div class="rowtools">' + tools.join("") + "</div>";
@@ -1114,6 +1168,9 @@ function renderTracker(animate) {
     const re = $("rowEdit");
     const src = r._src || [pr.sec, pr.row];
     if (re) re.addEventListener("click", () => editRowSheet(pat, src[0], src[1], () => renderTracker(false)));
+    const st = $("srcToggle");
+    if (st) st.addEventListener("click", () => { lsSet("knit-show-source", showSrc ? null : "1"); renderTracker(false); });
+    wireCheckButtons(card, pat, () => renderTracker(false));
     const rv = $("rowView");
     if (rv) rv.addEventListener("click", () => { lsSet("knit-long-rows", asList ? "sentence" : "list"); renderTracker(false); });
     card.querySelectorAll(".chk").forEach((b) => b.addEventListener("click", () => {
@@ -1267,6 +1324,17 @@ $("setplace").addEventListener("click", () => {
   panel.scrollIntoView({ block: "nearest" });
 });
 
+function wireCheckButtons(root, pat, after) {
+  root.querySelectorAll("[data-ok-row]").forEach((b) => b.addEventListener("click", () => {
+    const r = pat.guide.sections[+b.dataset.okSec].rows[+b.dataset.okRow];
+    r.check = Object.assign({}, r.check, { ok: true });
+    save("patterns", pat);
+    toast("Marked as checked");
+    after();
+  }));
+  root.querySelectorAll("[data-fix-row]").forEach((b) => b.addEventListener("click", () => editRowSheet(pat, +b.dataset.fixSec, +b.dataset.fixRow, after)));
+}
+
 /* fix a row Claude misread; the change is saved to the pattern, so every project using it sees it */
 function editRowSheet(pat, secIdx, rowIdx, after) {
   const r = pat.guide && pat.guide.sections[secIdx] && pat.guide.sections[secIdx].rows[rowIdx];
@@ -1278,13 +1346,14 @@ function editRowSheet(pat, secIdx, rowIdx, after) {
     fields: [
       { name: "label", label: "Row name", value: r.label },
       { name: "steps", label: "Instructions (one step per line)", type: "textarea", value: r.steps.join("\n"),
-        hint: sizesOf(pat.guide).length ? "Numbers that change by size look like {{100|120|150}}, one value per size in this order: " + sizesOf(pat.guide).join(" | ") + "." : "" }
+        hint: (r.source ? "Pattern says: \u201c" + r.source + "\u201d " : "") + (sizesOf(pat.guide).length ? "Numbers that change by size look like {{100|120|150}}, one value per size in this order: " + sizesOf(pat.guide).join(" | ") + "." : "") }
     ],
     onSubmit: (v) => {
       const steps = v.steps.split("\n").map((t) => t.trim()).filter(Boolean);
       if (!steps.length) throw new Error("Add at least one instruction.");
       r.label = v.label || r.label;
       r.steps = steps;
+      r.check = { ok: true }; // the knitter has looked at it
       pat.editedAt = Date.now();
       save("patterns", pat);
       toast("Row saved");
@@ -1351,6 +1420,8 @@ function renderPatternBody() {
     } else if (hasPdf && !Array.isArray(g.sizes)) {
       h += '<p class="hint">If this pattern comes in several sizes, read it again (link at the bottom) to choose a size for each project.</p>';
     }
+    const nFlag = flaggedCount(g);
+    if (nFlag) h += '<p class="hint warn">' + nFlag + (nFlag === 1 ? " row doesn\u2019t" : " rows don\u2019t") + " match the pattern\u2019s wording exactly. " + (nFlag === 1 ? "It\u2019s" : "They\u2019re") + " marked below; check " + (nFlag === 1 ? "it" : "each") + " against the PDF.</p>";
     if (g.overview) h += '<p class="overview">' + fmtText(g.overview, ctx) + "</p>";
     shown.sections.forEach((s, si) => {
       h += '<div class="sec"><h3>' + fmtText(s.title, ctx) + (view.patSize === null ? onlyNote(s.only_sizes, ctx) : "") + "</h3>";
@@ -1360,6 +1431,7 @@ function renderPatternBody() {
         const src = r._src || [si, ri];
         h += '<div class="rowcard"><p class="patlabel">' + fmtText(r.label, ctx) + (r.side ? ' <span class="side ' + (r.side === "RS" ? "rs" : "ws") + '">' + r.side + "</span>" : "") + (view.patSize === null ? onlyNote(r.only_sizes, ctx) : "") +
           '</p><p class="instr">' + r.steps.map((t) => fmtStep(t, g.techniques, ctx)).join(" ") + "</p>" +
+          (rowFlagged(r) ? sourceBox(r, true, src) : "") +
           (hasPdf ? '<button type="button" class="linkbtn" data-edit-sec="' + src[0] + '" data-edit-row="' + src[1] + '">Edit</button>' : "") + "</div>";
       });
       h += "</div>";
@@ -1372,6 +1444,7 @@ function renderPatternBody() {
     $("patSteps").hidden = false;
     const rr = $("rereadBtn");
     if (rr) armed(rr, () => readPattern(pat.id));
+    wireCheckButtons($("patSteps"), pat, () => renderPatternBody());
     const sel = $("patSizeSel");
     if (sel) sel.addEventListener("change", () => { view.patSize = sel.value === "" ? null : Number(sel.value); renderPatternBody(); });
     $("patSteps").querySelectorAll("[data-edit-row]").forEach((b) => b.addEventListener("click", () =>
@@ -1712,7 +1785,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-11-08.2";
+const APP_VERSION = "2026-11-08.3";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;
