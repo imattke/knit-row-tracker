@@ -777,6 +777,10 @@ How to structure it:
 - overview: a few short lines covering yarn, needles, gauge and sizes as the pattern states them.
 - title: the pattern's name.
 
+- Parts worked more than once: when the pattern says to work a part again ("work the second sleeve the same way", "make another"), write that part's sections out again in full, titled so they can be told apart ("Sleeve 1: ...", "Sleeve 2: ..."), so the knitter is walked through every piece.
+- Intervals that differ by size: when shaping happens every few rows and the interval differs by size ("decrease every 5th (5th) 6th (7th) round, 6 times"), make a section repeated that many times whose rows are one entry for the plain rows between shapings, such as "Knit {{4|4|5|6}} rounds.", followed by the shaping row. Then add any "continue until" part as its own section with repeat_type "until".
+- "At the same time": when two things run together (for example increases every other round while also working a stripe every 4th round), keep the main shaping as the rows and add a short step to each affected row reminding the knitter of the other, such as "Stripes: every 4th round is worked in the stripe color, starting with the 2nd increase round." Don't drop either instruction.
+
 Never add rows the pattern doesn't contain, and don't skip any.`;
 
 // Claude takes at most 32 MB per request and base64 adds a third, so bigger PDFs go as page images plus page text
@@ -1708,7 +1712,7 @@ setInterval(() => { if (document.visibilityState === "visible") Sync.soon(0); },
 /* ============================================================
    Start
    ============================================================ */
-const APP_VERSION = "2026-11-08.1";
+const APP_VERSION = "2026-11-08.2";
 if ("serviceWorker" in navigator) {
   // when a new version takes over, reload once so it's used straight away (progress is already saved)
   const hadController = !!navigator.serviceWorker.controller;
